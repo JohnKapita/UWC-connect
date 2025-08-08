@@ -1,3 +1,4 @@
 streamlit==1.29.0
 pandas==2.2.2  # Must update for Python 3.12!
 Pillow==10.4.0
+bcrypt==4.1.2
