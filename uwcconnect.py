@@ -1346,11 +1346,12 @@ def main():
 
     # Handle password reset token if present - UPDATED TO USE st.query_params
        # Some code above
-    if condition:
-        # Some indented code
-    
-    query_params = st.experimental_get_query_params()
+    if some_condition:  # Line 1349
+    # Add at least one indented statement here
+    # For example:
+    pass  # This is a placeholder
 
+query_params = st.experimental_get_query_params()  # Line 1352
 if "token" in query_params:
     token = query_params["token"][0]  # Get first token value
     
