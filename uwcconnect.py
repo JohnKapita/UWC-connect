@@ -1345,8 +1345,9 @@ def main():
     init_session_state()
 
     # Handle password reset token if present - UPDATED TO USE st.query_params
-    if "token" in st.query_params:
-        token = st.query_params["token"]
+   query_params = st.experimental_get_query_params()
+if "token" in query_params:
+    token = query_params["token"][0]       
         if token:
             reset_password(token)
 
