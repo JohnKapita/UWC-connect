@@ -1345,13 +1345,17 @@ def main():
     init_session_state()
 
     # Handle password reset token if present - UPDATED TO USE st.query_params
-   query_params = st.experimental_get_query_params()
-if "token" in query_params:
-    token = query_params["token"][0]       
-        if token:
-            reset_password(token)
+       # Some code above
+    if condition:
+        # Some indented code
+    
+    query_params = st.experimental_get_query_params()
 
-    # Navigation sidebar
+if "token" in query_params:
+    token = query_params["token"][0]  # Get first token value
+    
+    if token:
+        reset_password(token)    # Navigation sidebar
     if st.session_state.current_user:
         with st.sidebar:
             st.header("UWC Connect")
