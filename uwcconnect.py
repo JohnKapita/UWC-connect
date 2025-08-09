@@ -212,7 +212,7 @@ This code will expire in 10 minutes.""")
         return False
 
 
-# Send password reset email
+# Send password reset email - FIXED PERFORMANCE ISSUE
 def send_reset_email(receiver_email, token):
     sender_email = os.getenv("SMTP_EMAIL")
     sender_password = os.getenv("SMTP_PASSWORD")
@@ -221,15 +221,9 @@ def send_reset_email(receiver_email, token):
         st.error("Email configuration error. Please check your .env file")
         return False
 
-    # Get current app URL
-    if "RENDER" in os.environ:
-        # Render deployment
-        base_url = "https://uwc-connect.onrender.com"  # UPDATE WITH YOUR ACTUAL RENDER URL
-    else:
-        # Local development
-        base_url = st.experimental_get_query_params().get("_st_url", ["http://localhost:8501"])[0]
-
-    reset_link = f"{base_url}/?token={token}"  # Updated link format
+    # FIX: Optimized base URL determination
+    base_url = os.getenv("BASE_URL", "https://uwc-connect.onrender.com")
+    reset_link = f"{base_url}/?token={token}"
 
     message = MIMEText(f"""You requested a password reset for your UWC Connect account.
 
@@ -481,22 +475,22 @@ def auth_system():
 
                         # Store temporary user record with OTP
                         c.execute(
-                            "INSERT INTO users (email, verified, otp, otp_expiry) VALUES (?, ?, ?, ?)",
-                            (email, 0, otp, expiry)
-                        )
-                        conn.commit()
+                        "INSERT INTO users (email, verified, otp, otp_expiry) VALUES (?, ?, ?, ?)",
+                        (email, 0, otp, expiry)
+                    )
+                    conn.commit()
 
-                        if send_otp_email(email, otp):
-                            st.session_state.pending_verification = True
-                            st.session_state.temp_email = email
-                            st.session_state.temp_password = password
-                            st.session_state.otp_attempts = 0
-                            st.rerun()
-                        else:
-                            # Rollback if email fails
-                            conn.rollback()
-                            st.error("Failed to send OTP. Try again.")
-                    conn.close()
+                    if send_otp_email(email, otp):
+                        st.session_state.pending_verification = True
+                        st.session_state.temp_email = email
+                        st.session_state.temp_password = password
+                        st.session_state.otp_attempts = 0
+                        st.rerun()
+                    else:
+                        # Rollback if email fails
+                        conn.rollback()
+                        st.error("Failed to send OTP. Try again.")
+                conn.close()
 
 
 # Forgot password flow
