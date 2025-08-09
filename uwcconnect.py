@@ -294,7 +294,7 @@ def verify_reset_otp(email, user_otp):
 # Authentication system
 def auth_system():
     st.title("Campus Connect 🔐😍❤️")
-    st.subheader("Student social connection platform🥰")
+    st.subheader("Student social connection platform")
     
     # Add compliance notice
     st.info("""
@@ -1173,6 +1173,19 @@ def chat_interface():
     chat_content = ""
     for msg in messages:
         msg_id, sender, receiver, message, msg_time, read = msg
+        
+        # FIX: Convert string timestamp to datetime object if needed
+        if isinstance(msg_time, str):
+            try:
+                # Handle both timestamp formats
+                if '.' in msg_time:
+                    msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S.%f")
+                else:
+                    msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S")
+            except:
+                msg_time = datetime.now()
+        
+        # Format the time as HH:MM
         timestamp = msg_time.strftime("%H:%M")
         
         if sender == current_user:
