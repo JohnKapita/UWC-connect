@@ -127,7 +127,11 @@ def init_database():
 # Initialize session state
 def init_session_state():
     if "current_user" not in st.session_state:
-        st.session_state.current_user = None
+        # Try to get from cookies
+        if st.experimental_get_query_params().get("logged_in"):
+            st.session_state.current_user = st.experimental_get_query_params().get("logged_in")[0]
+        else:
+            st.session_state.current_user = None
     if "view" not in st.session_state:
         st.session_state.view = "auth"
     if "current_chat" not in st.session_state:
@@ -261,6 +265,9 @@ def verify_otp_in_db(email, user_otp):
 def auth_system():
     st.title("UWC Connect 🔐😍❤️")
     st.subheader("Exclusive dating sites for University of the Western Cape Students")
+    
+    # Add disclaimer
+    st.warning("Disclaimer: This website is not associated with the University of the Western Cape.")
 
     # OTP Verification Screen
     if st.session_state.pending_verification:
@@ -286,6 +293,7 @@ def auth_system():
                     conn.close()
 
                     st.session_state.current_user = email
+                    st.experimental_set_query_params(logged_in=email)
                     st.session_state.pending_verification = False
                     st.session_state.view = "profile"
                     st.success("Account verified! Please create your profile.")
@@ -414,6 +422,7 @@ def auth_system():
                                     st.error("Account not verified. Please check your email.")
                                 else:
                                     st.session_state.current_user = email
+                                    st.experimental_set_query_params(logged_in=email)
                                     # Check if profile exists
                                     conn = sqlite3.connect("uwc_connect.db")
                                     profile_exists = conn.execute(
@@ -900,7 +909,21 @@ def view_connections():
 
             with col2:
                 st.write(f"**{name}** wants to connect with you")
-                st.caption(f"Requested on {timestamp.strftime('%b %d, %Y at %H:%M')}")
+                
+                # FIXED TIMESTAMP HANDLING
+                # Convert string to datetime object if needed
+                if isinstance(timestamp, str):
+                    try:
+                        # Handle both formats (with and without microseconds)
+                        timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
+
+                if isinstance(timestamp, datetime):
+                    st.caption(f"Requested on {timestamp.strftime('%b %d, %Y at %H:%M')}")
+                else:
+                    st.caption(f"Requested on {timestamp}")
+                    
                 st.caption(f"{bio[:100]}..." if bio else "")
 
                 col_accept, col_reject, _ = st.columns([1, 1, 2])
@@ -977,7 +1000,17 @@ def view_connections():
 
             with col2:
                 st.write(f"**{name}**")
-                st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
+                # FIXED TIMESTAMP HANDLING
+                if isinstance(timestamp, str):
+                    try:
+                        timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
+                if isinstance(timestamp, datetime):
+                    st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
+                else:
+                    st.caption(f"Connected since {timestamp}")
+                    
                 if unread_count > 0:
                     st.caption(f"🔴 {unread_count} unread message{'s' if unread_count > 1 else ''}")
 
@@ -1192,6 +1225,7 @@ def delete_account():
                         st.success("Account deleted successfully")
                         st.session_state.clear()
                         st.session_state.view = "auth"
+                        st.experimental_set_query_params()
                         time.sleep(2)
                         st.rerun()
                     else:
@@ -1223,6 +1257,9 @@ def show_notifications():
 
 # Main App
 def main():
+    # Set session lifetime to 1 day (prevents logout when screen off)
+    st.session_state.setdefault('server.maxSessionAge', 86400)
+
     st.set_page_config(
         page_title="UWC Connect",
         page_icon="❤️",
@@ -1352,6 +1389,7 @@ def main():
             st.divider()
             if st.button("Logout"):
                 st.session_state.clear()
+                st.experimental_set_query_params()
                 st.session_state.view = "auth"
                 st.rerun()
 
