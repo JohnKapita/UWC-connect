@@ -221,7 +221,15 @@ def send_reset_email(receiver_email, token):
         st.error("Email configuration error. Please check your .env file")
         return False
 
-    reset_link = f"https://your-app-url.com/reset?token={token}"  # Replace with your actual URL
+    # Get current app URL
+    if "RENDER" in os.environ:
+        # Render deployment
+        base_url = "https://uwc-connect.onrender.com"  # UPDATE WITH YOUR ACTUAL RENDER URL
+    else:
+        # Local development
+        base_url = st.experimental_get_query_params().get("_st_url", ["http://localhost:8501"])[0]
+
+    reset_link = f"{base_url}/?token={token}"  # Updated link format
 
     message = MIMEText(f"""You requested a password reset for your UWC Connect account.
 
