@@ -111,12 +111,22 @@ def init_database():
     c.execute('''CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_users_verified ON users(verified)''')
 
-    # Check for missing columns
+    # Database upgrade: Check and add missing columns
     try:
+        # Check profiles table
         c.execute("PRAGMA table_info(profiles)")
-        columns = [col[1] for col in c.fetchall()]
-        if 'location' not in columns:
+        profile_columns = [col[1] for col in c.fetchall()]
+        if 'location' not in profile_columns:
             c.execute("ALTER TABLE profiles ADD COLUMN location TEXT")
+            
+        # Check password_resets table
+        c.execute("PRAGMA table_info(password_resets)")
+        reset_columns = [col[1] for col in c.fetchall()]
+        if 'otp' not in reset_columns:
+            c.execute("ALTER TABLE password_resets ADD COLUMN otp TEXT")
+        if 'expiry' not in reset_columns:
+            c.execute("ALTER TABLE password_resets ADD COLUMN expiry DATETIME")
+            
     except Exception as e:
         st.error(f"Database upgrade error: {str(e)}")
 
@@ -171,6 +181,8 @@ def init_session_state():
         st.session_state.reset_otp_verification = False
     if "reset_otp_attempts" not in st.session_state:
         st.session_state.reset_otp_attempts = 0
+    if "temp_reset_email" not in st.session_state:  # Added missing state variable
+        st.session_state.temp_reset_email = None
 
 
 # Strict UWC email validation
