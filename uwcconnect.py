@@ -1167,33 +1167,69 @@ def chat_interface():
     conn.commit()
     conn.close()
 
-    # Display chat messages
-    chat_container = st.container(height=400)
-    with chat_container:
-        for msg in messages:
-            msg_id, sender, receiver, message, msg_time, read = msg
-
-            if sender == current_user:
-                col1, col2 = st.columns([0.7, 0.3])
-                with col2:
-                    with st.chat_message("user", avatar="😊"):
-                        st.write(message)
-                        st.caption(msg_time.strftime("%H:%M"))
-            else:
-                col1, col2 = st.columns([0.3, 0.7])
-                with col1:
-                    avatar = None
-                    if other_photo:
-                        try:
-                            avatar = Image.open(io.BytesIO(other_photo))
-                        except:
-                            avatar = "👤"
-                    else:
-                        avatar = "👤"
-
-                    with st.chat_message("assistant", avatar=avatar):
-                        st.write(message)
-                        st.caption(msg_time.strftime("%H:%M"))
+    # FIXED: Create a scrollable chat container using CSS
+    st.markdown(
+        """
+        <style>
+        .chat-container {
+            height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #1a1d24;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        </style>
+        """, 
+        unsafe_allow_html=True
+    )
+    
+    # Display chat messages in scrollable container
+    chat_container = st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    
+    # We'll build the chat HTML content
+    chat_content = ""
+    for msg in messages:
+        msg_id, sender, receiver, message, msg_time, read = msg
+        timestamp = msg_time.strftime("%H:%M")
+        
+        if sender == current_user:
+            chat_content += f"""
+            <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+                <div style="background-color:#4a4e69; padding:10px; border-radius:15px; max-width:70%;">
+                    <div>{message}</div>
+                    <div style="text-align:right; font-size:0.8em; color:#aaa;">{timestamp}</div>
+                </div>
+            </div>
+            """
+        else:
+            avatar_html = "👤"
+            if other_photo:
+                try:
+                    # Convert to base64 for HTML embedding
+                    img = Image.open(io.BytesIO(other_photo))
+                    buffered = io.BytesIO()
+                    img.save(buffered, format="PNG")
+                    img_str = base64.b64encode(buffered.getvalue()).decode()
+                    avatar_html = f'<img src="data:image/png;base64,{img_str}" style="width:30px; height:30px; border-radius:50%;">'
+                except:
+                    pass
+                    
+            chat_content += f"""
+            <div style="display:flex; justify-content:flex-start; margin-bottom:10px;">
+                <div style="margin-right:10px;">
+                    {avatar_html}
+                </div>
+                <div style="background-color:#2d3039; padding:10px; border-radius:15px; max-width:70%;">
+                    <div>{message}</div>
+                    <div style="text-align:left; font-size:0.8em; color:#aaa;">{timestamp}</div>
+                </div>
+            </div>
+            """
+    
+    # Close the chat container div and add content
+    chat_container.empty()
+    st.markdown(f'<div class="chat-container">{chat_content}</div>', unsafe_allow_html=True)
 
     # Message input
     if prompt := st.chat_input("Type a message..."):
