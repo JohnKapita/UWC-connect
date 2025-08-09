@@ -894,11 +894,11 @@ def discover_profiles():
             record_like(st.session_state.current_user, email)
             st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
             st.success(f"Liked {name}!")
-            st.rerun()()
+            st.rerun()
     with col_nav3:
         if st.button("👉 Next", key="next"):
             st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
-            st.rerun()  # Only rerun if not a match
+            st.rerun()
 
     conn.close()
 
@@ -1345,18 +1345,13 @@ def main():
     init_session_state()
 
     # Handle password reset token if present - UPDATED TO USE st.query_params
-       # Some code above
-      # Line 1349
-    # Add at least one indented statement here
-    # For example:
-     # This is a placeholder
+    query_params = st.experimental_get_query_params()
+    if "token" in query_params:
+        token = query_params["token"][0]  # Get first token value
+        if token:
+            reset_password(token)
 
-query_params = st.experimental_get_query_params()  # Line 1352
-if "token" in query_params:
-    token = query_params["token"][0]  # Get first token value
-    
-    if token:
-        reset_password(token)    # Navigation sidebar
+    # Navigation sidebar
     if st.session_state.current_user:
         with st.sidebar:
             st.header("UWC Connect")
