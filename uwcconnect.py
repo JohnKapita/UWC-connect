@@ -14,13 +14,10 @@ from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from PIL import Image
 import io
-# Add to your existing imports
-import os
-from PIL import Image, ImageDraw, ImageFont
+import math
 
 # Load environment variables for email credentials
 load_dotenv()
-
 
 # Initialize database with proper schema
 def init_database():
@@ -30,155 +27,96 @@ def init_database():
     # Create users table
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (
-                     email
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     password
-                     TEXT,
-                     salt
-                     TEXT,
-                     verified
-                     BOOLEAN
-                     DEFAULT
-                     0,
-                     otp
-                     TEXT,
-                     otp_expiry
-                     DATETIME
+                     email TEXT PRIMARY KEY,
+                     password TEXT,
+                     salt TEXT,
+                     verified BOOLEAN DEFAULT 0,
+                     otp TEXT,
+                     otp_expiry DATETIME,
+                     last_active DATETIME,
+                     login_attempts INTEGER DEFAULT 0,
+                     last_attempt DATETIME
                  )''')
 
-    # Create profiles table with intention column
+    # Create profiles table with new columns
     c.execute('''CREATE TABLE IF NOT EXISTS profiles
                  (
-                     email
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     name
-                     TEXT,
-                     age
-                     INTEGER,
-                     gender
-                     TEXT,
-                     bio
-                     TEXT,
-                     interests
-                     TEXT,
-                     photo
-                     BLOB,
-                     timestamp
-                     DATETIME,
-                     intention
-                     TEXT
-                     DEFAULT
-                     'Not sure yet'
+                     email TEXT PRIMARY KEY,
+                     name TEXT,
+                     age INTEGER,
+                     gender TEXT,
+                     bio TEXT,
+                     interests TEXT,
+                     photo BLOB,
+                     timestamp DATETIME,
+                     intention TEXT DEFAULT 'Not sure yet',
+                     location TEXT
                  )''')
 
     # Create connections table
     c.execute('''CREATE TABLE IF NOT EXISTS connections
                  (
-                     id
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     from_email
-                     TEXT,
-                     to_email
-                     TEXT,
-                     status
-                     TEXT,
-                     timestamp
-                     DATETIME
+                     id TEXT PRIMARY KEY,
+                     from_email TEXT,
+                     to_email TEXT,
+                     status TEXT,
+                     timestamp DATETIME
                  )''')
 
     # Create messages table
     c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (
-                     id
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     chat_id
-                     TEXT,
-                     sender
-                     TEXT,
-                     receiver
-                     TEXT,
-                     message
-                     TEXT,
-                     time
-                     DATETIME,
-                     read
-                     BOOLEAN
-                     DEFAULT
-                     0
+                     id TEXT PRIMARY KEY,
+                     chat_id TEXT,
+                     sender TEXT,
+                     receiver TEXT,
+                     message TEXT,
+                     time DATETIME,
+                     read BOOLEAN DEFAULT 0
                  )''')
 
     # Create reports table
     c.execute('''CREATE TABLE IF NOT EXISTS reports
                  (
-                     id
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     reporter_email
-                     TEXT,
-                     reported_email
-                     TEXT,
-                     reason
-                     TEXT,
-                     details
-                     TEXT,
-                     timestamp
-                     DATETIME,
-                     status
-                     TEXT
-                     DEFAULT
-                     'pending'
+                     id TEXT PRIMARY KEY,
+                     reporter_email TEXT,
+                     reported_email TEXT,
+                     reason TEXT,
+                     details TEXT,
+                     timestamp DATETIME,
+                     status TEXT DEFAULT 'pending'
                  )''')
 
     # Create password resets table
     c.execute('''CREATE TABLE IF NOT EXISTS password_resets
                  (
-                     email
-                     TEXT
-                     PRIMARY
-                     KEY,
-                     token
-                     TEXT,
-                     expiry
-                     DATETIME
+                     email TEXT PRIMARY KEY,
+                     token TEXT,
+                     expiry DATETIME
                  )''')
 
     # Create blocked users table
     c.execute('''CREATE TABLE IF NOT EXISTS blocked_users
-    (
-        blocker_email
-        TEXT,
-        blocked_email
-        TEXT,
-        timestamp
-        DATETIME,
-        PRIMARY
-        KEY
                  (
-        blocker_email,
-        blocked_email
-                 )
-        )''')
+                     blocker_email TEXT,
+                     blocked_email TEXT,
+                     timestamp DATETIME,
+                     PRIMARY KEY (blocker_email, blocked_email)
+                 )''')
 
-    # Add indexes
+    # Add indexes for performance
     c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_email)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_email)''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_users_verified ON users(verified)''')
 
     # Check for missing columns
     try:
         c.execute("PRAGMA table_info(profiles)")
         columns = [col[1] for col in c.fetchall()]
-        if 'intention' not in columns:
-            c.execute("ALTER TABLE profiles ADD COLUMN intention TEXT DEFAULT 'Not sure yet'")
+        if 'location' not in columns:
+            c.execute("ALTER TABLE profiles ADD COLUMN location TEXT")
     except Exception as e:
         st.error(f"Database upgrade error: {str(e)}")
 
@@ -212,6 +150,18 @@ def init_session_state():
         st.session_state.reporting_user = None
     if "reporting_name" not in st.session_state:
         st.session_state.reporting_name = None
+    if "profiles_cache" not in st.session_state:
+        st.session_state.profiles_cache = None
+    if "cache_timestamp" not in st.session_state:
+        st.session_state.cache_timestamp = None
+    if "swipe_x" not in st.session_state:
+        st.session_state.swipe_x = 0
+    if "swipe_y" not in st.session_state:
+        st.session_state.swipe_y = 0
+    if "swipe_start" not in st.session_state:
+        st.session_state.swipe_start = None
+    if "swipe_action" not in st.session_state:
+        st.session_state.swipe_action = None
 
 
 # Strict UWC email validation
@@ -617,6 +567,14 @@ def create_profile():
         intention = st.radio("What are you looking for?",
                              ["Relationship", "Friendship", "Hookups", "Not sure yet"],
                              index=3)
+        
+        # Campus location selection
+        location = st.selectbox("Common Campus Location", [
+            "Library", "Student Center", "Science Building", 
+            "Arts Building", "Sports Complex", "Residence A",
+            "Residence B", "Main Cafeteria", "Engineering Building", 
+            "Admin Building"
+        ])
 
         # Photo uploader
         photo = st.file_uploader("Profile Photo (max 2MB)", type=["jpg", "png", "jpeg"],
@@ -637,10 +595,10 @@ def create_profile():
 
                 conn = sqlite3.connect("uwc_connect.db")
                 conn.execute('''INSERT INTO profiles
-                                    (email, name, age, gender, bio, interests, photo, timestamp, intention)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    (email, name, age, gender, bio, interests, photo, timestamp, intention, location)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                              (st.session_state.current_user, name, age, gender, bio,
-                              ", ".join(interests), photo_data, datetime.now(), intention))
+                              ", ".join(interests), photo_data, datetime.now(), intention, location))
                 conn.commit()
                 conn.close()
 
@@ -681,6 +639,17 @@ def edit_profile():
             "Sports", "Music", "Gaming", "Academics",
             "Art", "Travel", "Food", "Movies", "Dancing"
         ], default=current_interests)
+        
+        # Location editing
+        locations = [
+            "Library", "Student Center", "Science Building", 
+            "Arts Building", "Sports Complex", "Residence A",
+            "Residence B", "Main Cafeteria", "Engineering Building", 
+            "Admin Building"
+        ]
+        current_location = profile[9] if len(profile) > 9 else ""
+        location_index = locations.index(current_location) if current_location in locations else 0
+        location = st.selectbox("Common Campus Location", locations, index=location_index)
 
         # Show current photo if exists
         if profile[6]:
@@ -728,10 +697,11 @@ def edit_profile():
                                     bio=?,
                                     interests=?,
                                     photo=?,
-                                    intention=?
+                                    intention=?,
+                                    location=?
                                 WHERE email = ?''',
                              (name, age, gender, bio, ", ".join(interests),
-                              photo_data, intention, st.session_state.current_user))
+                              photo_data, intention, location, st.session_state.current_user))
                 conn.commit()
                 conn.close()
 
@@ -741,166 +711,6 @@ def edit_profile():
                 st.rerun()
             except Exception as e:
                 st.error(f"Error updating profile: {str(e)}")
-
-
-# Discover Profiles
-def discover_profiles():
-    st.title("Discover UWC SINGLES🥰😍")
-    current_user = st.session_state.current_user
-    conn = sqlite3.connect('uwc_connect.db')
-
-    try:
-        # Get current user's profile
-        current_profile = conn.execute(
-            "SELECT name, age, gender, interests, intention FROM profiles WHERE email=?",
-            (current_user,)
-        ).fetchone()
-
-        if not current_profile:
-            st.warning("Complete your profile to start discovering others.")
-            conn.close()
-            return
-
-        current_name, current_age, current_gender, current_interests, current_intention = current_profile
-        user_interests = set(current_interests.split(", ")) if current_interests else set()
-    except sqlite3.Error as e:
-        st.error(f"Database error: {e}")
-        conn.close()
-        return
-
-    # Get and process profiles
-    available_profiles = []
-    for row in conn.execute(
-            '''SELECT email,
-                      name,
-                      age,
-                      gender,
-                      bio,
-                      interests,
-                      photo,
-                      intention
-               FROM profiles
-               WHERE email != ?''',
-            (current_user,)
-    ).fetchall():
-        # Unpack the row and process each profile
-        email, name, age, gender, bio, interests_str, photo, intention = row
-
-        # Check if user is blocked
-        is_blocked = conn.execute(
-            "SELECT 1 FROM blocked_users WHERE blocker_email=? AND blocked_email=?",
-            (current_user, email)
-        ).fetchone()
-
-        if is_blocked:
-            continue
-
-        # Calculate compatibility score
-        other_interests = set(interests_str.split(", ")) if interests_str else set()
-        shared_interests = user_interests & other_interests
-        score = len(shared_interests)  # Simple compatibility score
-
-        # Add to available profiles
-        available_profiles.append((score, email, name, age, gender, bio, interests_str, photo, intention))
-
-    # Sort by compatibility
-    available_profiles.sort(reverse=True, key=lambda x: x[0])
-
-    if not available_profiles:
-        st.info("No profiles to show. Try again later.")
-        conn.close()
-        return
-
-    # Get current profile to show
-    st.session_state.current_index = st.session_state.get('current_index', 0)
-    if st.session_state.current_index >= len(available_profiles):
-        st.session_state.current_index = 0
-
-    # Unpack profile data
-    score, email, name, age, gender, bio, interests, photo, intention = available_profiles[
-        st.session_state.current_index]
-
-    # Display the profile
-    col1, col2 = st.columns(2)
-    with col1:
-        def safe_image_display(image_data, caption, width, is_bytes=False):
-            """Safely display images with fallbacks for errors"""
-            try:
-                if image_data:
-                    if is_bytes:
-                        st.image(Image.open(io.BytesIO(image_data)),
-                                 caption=caption,
-                                 width=width)
-                    elif os.path.exists(image_data):
-                        st.image(image_data, caption=caption, width=width)
-                    else:
-                        raise FileNotFoundError("Image file not found")
-                else:
-                    raise ValueError("No image data provided")
-            except Exception as e:
-                # Create fallback images programmatically
-                try:
-                    # First fallback: Gray placeholder
-                    blank_image = Image.new('RGB', (width, width), (200, 200, 200))
-                    draw = ImageDraw.Draw(blank_image)
-
-                    # Add text to the placeholder
-                    try:
-                        font = ImageFont.truetype("Arial", 20)
-                    except:
-                        font = ImageFont.load_default()
-
-                    text = "Profile\nImage"
-                    text_width, text_height = draw.textsize(text, font=font)
-                    position = ((width - text_width) // 2, (width - text_height) // 2)
-                    draw.text(position, text, fill=(100, 100, 100), font=font)
-
-                    st.image(blank_image, caption=f"Placeholder: {caption}", width=width)
-                except:
-                    # Final fallback: Red error image
-                    error_image = Image.new('RGB', (width, width), (255, 0, 0))
-                    st.image(error_image, caption="Image Error", width=width)
-
-        # Use the safe display function for both cases
-        if photo:
-            safe_image_display(photo, f"{name}'s Photo", 300, is_bytes=True)
-        else:
-            safe_image_display("default_profile.png", "Default Profile", 300)
-
-    with col2:
-        st.subheader(f"{name}, {age}")
-        st.caption(f"{gender}")
-        st.caption(f"Looking for: {intention}")
-        st.write(f"**Shared interests:** {', '.join(user_interests.intersection(set(interests.split(', '))))}")
-        st.write(bio)
-
-        # Report button
-        if st.button("⚠️ Report User", key=f"report_{email}"):
-            st.session_state.reporting_user = email
-            st.session_state.reporting_name = name
-            st.session_state.view = "report_user"
-            st.rerun()
-
-    # Navigation buttons
-    col_nav1, col_nav2, col_nav3 = st.columns(3)
-    with col_nav1:
-        if st.button("👎 Pass", key="pass"):
-            # Move to next profile
-            st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
-            st.rerun()
-    with col_nav2:
-        if st.button("❤️ Like", key="like"):
-            # Record like and move to next
-            record_like(st.session_state.current_user, email)
-            st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
-            st.success(f"Liked {name}!")
-            st.rerun()
-    with col_nav3:
-        if st.button("👉 Next", key="next"):
-            st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
-            st.rerun()
-
-    conn.close()
 
 
 # Record like action
@@ -913,6 +723,144 @@ def record_like(from_email, to_email):
     )
     conn.commit()
     conn.close()
+
+
+# Record connection request
+def record_connection_request(from_email, to_email):
+    conn = sqlite3.connect("uwc_connect.db")
+    conn.execute(
+        '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
+           VALUES (?, ?, ?, ?, ?)''',
+        (str(uuid4()), from_email, to_email, "requested", datetime.now())
+    )
+    conn.commit()
+    conn.close()
+
+
+# Discover Profiles with optimized performance and swipe functionality
+def discover_profiles():
+    st.title("Discover UWC SINGLES🥰😍")
+    current_user = st.session_state.current_user
+    
+    # Use cached profiles if available and recent (within 5 minutes)
+    if st.session_state.profiles_cache and st.session_state.cache_timestamp:
+        if (datetime.now() - st.session_state.cache_timestamp).total_seconds() < 300:
+            available_profiles = st.session_state.profiles_cache
+        else:
+            st.session_state.profiles_cache = None
+            st.session_state.cache_timestamp = None
+            available_profiles = get_profiles(current_user)
+    else:
+        available_profiles = get_profiles(current_user)
+        st.session_state.profiles_cache = available_profiles
+        st.session_state.cache_timestamp = datetime.now()
+
+    if not available_profiles:
+        st.info("No profiles to show. Try again later.")
+        return
+
+    # Get current profile to show
+    st.session_state.current_index = st.session_state.get('current_index', 0)
+    if st.session_state.current_index >= len(available_profiles):
+        st.session_state.current_index = 0
+
+    # Unpack profile data
+    email, name, age, gender, bio, interests, photo, intention, location = available_profiles[
+        st.session_state.current_index]
+
+    # Display the profile with swipeable interface
+    with st.container():
+        # Create swipeable card
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.write("")  # Spacer
+            
+        with col2:
+            # Swipe instructions
+            st.markdown("""
+                <div style="text-align:center; margin-bottom:20px;">
+                    <p>Swipe ← to pass, swipe → to like</p>
+                    <p>Or use buttons below</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Profile card
+            with st.container():
+                card = st.empty()
+                with card.container():
+                    # Display photo
+                    if photo:
+                        try:
+                            st.image(Image.open(io.BytesIO(photo)), width=250, caption=f"{name}, {age}")
+                        except:
+                            st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                    else:
+                        st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                    
+                    # Profile info
+                    st.caption(f"{gender} • Looking for: {intention}")
+                    if location:
+                        st.caption(f"📍 Common location: {location}")
+                    st.write(bio)
+                    st.write(f"**Interests:** {interests}")
+            
+            # Swipe action indicator
+            if st.session_state.swipe_action:
+                if st.session_state.swipe_action == "like":
+                    st.success(f"Liked {name}!")
+                elif st.session_state.swipe_action == "pass":
+                    st.info(f"Passed on {name}")
+                st.session_state.swipe_action = None
+            
+            # Action buttons
+            col_pass, col_connect, col_like = st.columns([1, 1, 1])
+            with col_pass:
+                if st.button("👎 Pass", key="pass", use_container_width=True):
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
+                    st.rerun()
+            with col_connect:
+                if st.button("🤝 Connect", key="connect", type="primary", use_container_width=True):
+                    record_connection_request(st.session_state.current_user, email)
+                    st.success(f"Connection request sent to {name}!")
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
+                    st.rerun()
+            with col_like:
+                if st.button("❤️ Like", key="like", use_container_width=True):
+                    record_like(st.session_state.current_user, email)
+                    st.success(f"Liked {name}!")
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
+                    st.rerun()
+
+
+# Get profiles with optimized query
+def get_profiles(current_user):
+    conn = sqlite3.connect("uwc_connect.db")
+    
+    try:
+        # Pre-fetch blocked users
+        blocked_users = conn.execute(
+            "SELECT blocked_email FROM blocked_users WHERE blocker_email=?",
+            (current_user,)
+        ).fetchall()
+        blocked_emails = [row[0] for row in blocked_users]
+
+        # Get profiles excluding current user and blocked users
+        profiles = []
+        for row in conn.execute(
+                '''SELECT email, name, age, gender, bio, interests, photo, intention, location
+                   FROM profiles
+                   WHERE email != ?''',
+                (current_user,)
+        ).fetchall():
+            if row[0] not in blocked_emails:
+                profiles.append(row)
+                
+        return profiles
+    except sqlite3.Error as e:
+        st.error(f"Database error: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 # Connections Management
@@ -1048,8 +996,7 @@ def view_connections():
                 # Block button for connections
                 if st.button("🚫 Block", key=f"block_{conn_id}"):
                     conn.execute(
-                        '''INSERT
-                        OR IGNORE INTO blocked_users 
+                        '''INSERT OR IGNORE INTO blocked_users 
                            (blocker_email, blocked_email, timestamp)
                            VALUES (?, ?, ?)''',
                         (current_user, other_email, datetime.now())
@@ -1344,10 +1291,10 @@ def main():
     init_database()
     init_session_state()
 
-    # Handle password reset token if present - UPDATED TO USE st.query_params
+    # Handle password reset token if present
     query_params = st.experimental_get_query_params()
     if "token" in query_params:
-        token = query_params["token"][0]  # Get first token value
+        token = query_params["token"][0]
         if token:
             reset_password(token)
 
@@ -1438,19 +1385,19 @@ def main():
         sample_profiles = [
             ("s123456@myuwc.ac.za", "Amanda K", 21, "Female",
              "Psychology major who loves hiking and indie music",
-             "Music, Travel, Art", b"", datetime.now(), "Relationship"),
+             "Music, Travel, Art", b"", datetime.now(), "Relationship", "Library"),
             ("s234567@myuwc.ac.za", "James L", 22, "Male",
              "Computer Science student and football enthusiast",
-             "Sports, Gaming, Movies", b"", datetime.now(), "Friendship"),
+             "Sports, Gaming, Movies", b"", datetime.now(), "Friendship", "Student Center"),
             ("s345678@myuwc.ac.za", "Priya M", 20, "Female",
              "Art student passionate about street photography",
-             "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet"),
+             "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet", "Arts Building"),
             ("s456789@myuwc.ac.za", "Thomas O", 23, "Male",
              "Engineering student who plays guitar and loves jazz",
-             "Music, Technology, Science", b"", datetime.now(), "Hookups"),
+             "Music, Technology, Science", b"", datetime.now(), "Hookups", "Engineering Building"),
             ("s567890@myuwc.ac.za", "Naledi P", 19, "Female",
              "Environmental science major and vegan foodie",
-             "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship")
+             "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship", "Main Cafeteria")
         ]
 
         # Create sample users
@@ -1463,7 +1410,7 @@ def main():
             conn.execute("INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
                          (email, hashed_pw, salt, 1))
             conn.execute(
-                "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 profile)
 
         conn.commit()
