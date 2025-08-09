@@ -87,11 +87,11 @@ def init_database():
                      status TEXT DEFAULT 'pending'
                  )''')
 
-    # Create password resets table
+    # Create password resets table (MODIFIED for OTP)
     c.execute('''CREATE TABLE IF NOT EXISTS password_resets
                  (
                      email TEXT PRIMARY KEY,
-                     token TEXT,
+                     otp TEXT,
                      expiry DATETIME
                  )''')
 
@@ -166,6 +166,11 @@ def init_session_state():
         st.session_state.swipe_start = None
     if "swipe_action" not in st.session_state:
         st.session_state.swipe_action = None
+    # NEW: State for password reset OTP flow
+    if "reset_otp_verification" not in st.session_state:
+        st.session_state.reset_otp_verification = False
+    if "reset_otp_attempts" not in st.session_state:
+        st.session_state.reset_otp_attempts = 0
 
 
 # Strict UWC email validation
@@ -179,11 +184,6 @@ def is_valid_uwc_email(email):
 # Generate random 6-digit OTP
 def generate_otp():
     return str(random.randint(100000, 999999))
-
-
-# Generate random 32-character reset token
-def generate_reset_token():
-    return base64.urlsafe_b64encode(os.urandom(24)).decode()
 
 
 # Send OTP email
@@ -212,8 +212,8 @@ This code will expire in 10 minutes.""")
         return False
 
 
-# Send password reset email - FIXED PERFORMANCE ISSUE
-def send_reset_email(receiver_email, token):
+# NEW: Send password reset OTP email
+def send_reset_otp_email(receiver_email, otp):
     sender_email = os.getenv("SMTP_EMAIL")
     sender_password = os.getenv("SMTP_PASSWORD")
 
@@ -221,17 +221,14 @@ def send_reset_email(receiver_email, token):
         st.error("Email configuration error. Please check your .env file")
         return False
 
-    # FIX: Optimized base URL determination
-    base_url = os.getenv("BASE_URL", "https://uwc-connect.onrender.com")
-    reset_link = f"{base_url}/?token={token}"
-
     message = MIMEText(f"""You requested a password reset for your UWC Connect account.
 
-Click this link to reset your password: {reset_link}
+Your password reset code is: {otp}
+
+This code will expire in 10 minutes.
 
 If you didn't request this, please ignore this email.""")
-
-    message['Subject'] = "Password Reset Request - UWC Connect"
+    message['Subject'] = "Password Reset OTP - UWC Connect"
     message['From'] = sender_email
     message['To'] = receiver_email
 
@@ -241,7 +238,7 @@ If you didn't request this, please ignore this email.""")
             server.sendmail(sender_email, receiver_email, message.as_string())
         return True
     except Exception as e:
-        st.error(f"Failed to send reset email: {str(e)}")
+        st.error(f"Failed to send reset OTP: {str(e)}")
         return False
 
 
@@ -250,6 +247,24 @@ def verify_otp_in_db(email, user_otp):
     conn = sqlite3.connect("uwc_connect.db")
     c = conn.cursor()
     c.execute("SELECT otp, otp_expiry FROM users WHERE email=?", (email,))
+    result = c.fetchone()
+    conn.close()
+
+    if not result or not result[0]:
+        return False
+
+    stored_otp, expiry_str = result
+    expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S.%f") if '.' in expiry_str else datetime.strptime(
+        expiry_str, "%Y-%m-%d %H:%M:%S")
+
+    return stored_otp == user_otp and datetime.now() < expiry
+
+
+# NEW: Verify reset OTP
+def verify_reset_otp(email, user_otp):
+    conn = sqlite3.connect("uwc_connect.db")
+    c = conn.cursor()
+    c.execute("SELECT otp, expiry FROM password_resets WHERE email=?", (email,))
     result = c.fetchone()
     conn.close()
 
@@ -351,7 +366,7 @@ def auth_system():
 
     # Password Reset Screen
     if st.session_state.resetting_password:
-        st.subheader("Reset Password")
+        st.subheader("Create New Password")
 
         with st.form("reset_password_form"):
             new_password = st.text_input("New Password (min 8 characters)", type="password")
@@ -388,6 +403,68 @@ def auth_system():
             st.session_state.resetting_password = False
             st.rerun()
 
+        return
+
+    # NEW: Reset OTP Verification Screen
+    if st.session_state.reset_otp_verification:
+        email = st.session_state.temp_reset_email
+        st.subheader(f"Reset Password for {email}")
+        
+        user_otp = st.text_input("Enter 6-digit OTP sent to your email", max_chars=6, key="reset_otp_input")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Verify OTP", type="primary", key="verify_reset_otp"):
+                if verify_reset_otp(email, user_otp):
+                    st.session_state.reset_otp_verification = False
+                    st.session_state.resetting_password = True
+                    st.session_state.temp_email = email
+                    st.rerun()
+                else:
+                    st.session_state.reset_otp_attempts += 1
+                    if st.session_state.reset_otp_attempts >= 3:
+                        st.error("Too many failed attempts. Please start over.")
+                        # Clean up reset request
+                        conn = sqlite3.connect("uwc_connect.db")
+                        conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                        conn.commit()
+                        conn.close()
+                        st.session_state.reset_otp_verification = False
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("Invalid OTP. Please try again.")
+
+        with col2:
+            if st.button("Resend OTP", key="resend_reset_otp"):
+                new_otp = generate_otp()
+                expiry = datetime.now() + timedelta(minutes=10)
+
+                conn = sqlite3.connect("uwc_connect.db")
+                conn.execute(
+                    "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                    (email, new_otp, expiry)
+                )
+                conn.commit()
+                conn.close()
+
+                if send_reset_otp_email(email, new_otp):
+                    st.success("New OTP sent!")
+                else:
+                    st.error("Failed to resend OTP")
+
+        with col3:
+            if st.button("Cancel", key="cancel_reset_otp"):
+                conn = sqlite3.connect("uwc_connect.db")
+                conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                conn.commit()
+                conn.close()
+                st.session_state.reset_otp_verification = False
+                st.info("Password reset cancelled")
+                time.sleep(1)
+                st.rerun()
+
+        st.caption("Didn't receive OTP? Check spam folder or resend.")
         return
 
     # Normal auth tabs
@@ -493,14 +570,14 @@ def auth_system():
                 conn.close()
 
 
-# Forgot password flow
+# Forgot password flow (UPDATED for OTP)
 def forgot_password():
     st.title("Reset Your Password")
 
     with st.form("forgot_password_form"):
         email = st.text_input("Enter your UWC email address")
 
-        if st.form_submit_button("Send Reset Link"):
+        if st.form_submit_button("Send OTP"):
             if not is_valid_uwc_email(email):
                 st.error("Invalid UWC email format")
             else:
@@ -512,51 +589,28 @@ def forgot_password():
                 if not user_exists:
                     st.error("Email not registered")
                 else:
-                    # Generate and store reset token
-                    token = generate_reset_token()
-                    expiry = datetime.now() + timedelta(hours=1)
+                    # Generate and store reset OTP
+                    otp = generate_otp()
+                    expiry = datetime.now() + timedelta(minutes=10)
 
                     conn.execute(
-                        "INSERT OR REPLACE INTO password_resets (email, token, expiry) VALUES (?, ?, ?)",
-                        (email, token, expiry)
+                        "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                        (email, otp, expiry)
                     )
                     conn.commit()
                     conn.close()
 
-                    if send_reset_email(email, token):
-                        st.success("Password reset link sent to your email!")
+                    if send_reset_otp_email(email, otp):
+                        st.session_state.reset_otp_verification = True
+                        st.session_state.temp_reset_email = email
+                        st.session_state.reset_otp_attempts = 0
+                        st.rerun()
                     else:
-                        st.error("Failed to send reset email. Please try again.")
+                        st.error("Failed to send OTP. Please try again.")
 
     if st.button("Back to Login"):
         st.session_state.view = "auth"
         st.rerun()
-
-
-# Password reset flow
-def reset_password(token):
-    conn = sqlite3.connect("uwc_connect.db")
-    reset_request = conn.execute(
-        "SELECT email, expiry FROM password_resets WHERE token=?", (token,)
-    ).fetchone()
-    conn.close()
-
-    if not reset_request:
-        st.error("Invalid or expired reset token")
-        st.session_state.view = "auth"
-        st.rerun()
-        return
-
-    email, expiry = reset_request
-    if datetime.now() > datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S.%f"):
-        st.error("Reset token has expired")
-        st.session_state.view = "auth"
-        st.rerun()
-        return
-
-    st.session_state.temp_email = email
-    st.session_state.resetting_password = True
-    st.rerun()
 
 
 # Profile Creation
@@ -1330,13 +1384,6 @@ def main():
     init_database()
     init_session_state()
 
-    # Handle password reset token if present
-    query_params = st.experimental_get_query_params()
-    if "token" in query_params:
-        token = query_params["token"][0]
-        if token:
-            reset_password(token)
-
     # Navigation sidebar
     if st.session_state.current_user:
         with st.sidebar:
@@ -1416,6 +1463,10 @@ def main():
         report_user()
     elif st.session_state.view == "delete_account":
         delete_account()
+    # NEW: Handle reset OTP verification view
+    elif st.session_state.reset_otp_verification:
+        # This is handled within auth_system now
+        auth_system()
 
     # Add sample data if database is empty
     conn = sqlite3.connect("uwc_connect.db")
