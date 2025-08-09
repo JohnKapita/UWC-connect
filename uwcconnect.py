@@ -21,7 +21,7 @@ load_dotenv()
 
 # Initialize database with proper schema
 def init_database():
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     c = conn.cursor()
 
     # Create users table
@@ -49,8 +49,7 @@ def init_database():
                      interests TEXT,
                      photo BLOB,
                      timestamp DATETIME,
-                     intention TEXT DEFAULT 'Not sure yet',
-                     location TEXT
+                     intention TEXT DEFAULT 'Not sure yet'
                  )''')
 
     # Create connections table
@@ -116,8 +115,6 @@ def init_database():
         # Check profiles table
         c.execute("PRAGMA table_info(profiles)")
         profile_columns = [col[1] for col in c.fetchall()]
-        if 'location' not in profile_columns:
-            c.execute("ALTER TABLE profiles ADD COLUMN location TEXT")
             
         # Check password_resets table
         c.execute("PRAGMA table_info(password_resets)")
@@ -185,11 +182,15 @@ def init_session_state():
         st.session_state.temp_reset_email = None
 
 
-# Strict UWC email validation
-def is_valid_uwc_email(email):
+# Email validation with first 3 numbers requirement
+def is_valid_student_email(email):
     if not email:
         return False
-    pattern = r'^s?\d{1,7}@myuwc\.ac\.za$'
+    # Check if first 3 characters are digits
+    if len(email) < 3 or not email[:3].isdigit():
+        return False
+    # Basic email format validation
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
 
@@ -207,10 +208,10 @@ def send_otp_email(receiver_email, otp):
         st.error("Email configuration error. Please check your .env file")
         return False
 
-    message = MIMEText(f"""Your UWC Connect verification code is: {otp}
+    message = MIMEText(f"""Your Campus Connect verification code is: {otp}
 
 This code will expire in 10 minutes.""")
-    message['Subject'] = "Verify Your UWC Connect Account"
+    message['Subject'] = "Verify Your Campus Connect Account"
     message['From'] = sender_email
     message['To'] = receiver_email
 
@@ -233,14 +234,14 @@ def send_reset_otp_email(receiver_email, otp):
         st.error("Email configuration error. Please check your .env file")
         return False
 
-    message = MIMEText(f"""You requested a password reset for your UWC Connect account.
+    message = MIMEText(f"""You requested a password reset for your Campus Connect account.
 
 Your password reset code is: {otp}
 
 This code will expire in 10 minutes.
 
 If you didn't request this, please ignore this email.""")
-    message['Subject'] = "Password Reset OTP - UWC Connect"
+    message['Subject'] = "Password Reset OTP - Campus Connect"
     message['From'] = sender_email
     message['To'] = receiver_email
 
@@ -256,7 +257,7 @@ If you didn't request this, please ignore this email.""")
 
 # Verify OTP against database
 def verify_otp_in_db(email, user_otp):
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     c = conn.cursor()
     c.execute("SELECT otp, otp_expiry FROM users WHERE email=?", (email,))
     result = c.fetchone()
@@ -274,7 +275,7 @@ def verify_otp_in_db(email, user_otp):
 
 # NEW: Verify reset OTP
 def verify_reset_otp(email, user_otp):
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     c = conn.cursor()
     c.execute("SELECT otp, expiry FROM password_resets WHERE email=?", (email,))
     result = c.fetchone()
@@ -292,11 +293,14 @@ def verify_reset_otp(email, user_otp):
 
 # Authentication system
 def auth_system():
-    st.title("UWC Connect 🔐😍❤️")
-    st.subheader("Exclusive dating sites for University of the Western Cape Students")
+    st.title("Campus Connect 🔐😍❤️")
+    st.subheader("Student social connection platform🥰")
     
-    # Add disclaimer
-    st.warning("Disclaimer: This website is not associated with the University of the Western Cape.")
+    # Add compliance notice
+    st.info("""
+    **Compliance Notice:**  
+    This platform is for social networking purposes only. All users must adhere to their institution's code of conduct.
+    """)
 
     # OTP Verification Screen
     if st.session_state.pending_verification:
@@ -313,7 +317,7 @@ def auth_system():
                     salt = bcrypt.gensalt()
                     hashed_pw = bcrypt.hashpw(st.session_state.temp_password.encode(), salt)
 
-                    conn = sqlite3.connect("uwc_connect.db")
+                    conn = sqlite3.connect("campus_connect.db")
                     conn.execute(
                         "UPDATE users SET password=?, salt=?, verified=1, otp=NULL, otp_expiry=NULL WHERE email=?",
                         (hashed_pw, salt, email)
@@ -333,7 +337,7 @@ def auth_system():
                     if st.session_state.otp_attempts >= 3:
                         st.error("Too many failed attempts. Please register again.")
                         # Clean up failed registration
-                        conn = sqlite3.connect("uwc_connect.db")
+                        conn = sqlite3.connect("campus_connect.db")
                         conn.execute("DELETE FROM users WHERE email=?", (email,))
                         conn.commit()
                         conn.close()
@@ -348,7 +352,7 @@ def auth_system():
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute(
                     "UPDATE users SET otp=?, otp_expiry=? WHERE email=?",
                     (new_otp, expiry, email)
@@ -363,7 +367,7 @@ def auth_system():
 
         with col3:
             if st.button("Cancel"):
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute("DELETE FROM users WHERE email=?", (email,))
                 conn.commit()
                 conn.close()
@@ -394,7 +398,7 @@ def auth_system():
                     salt = bcrypt.gensalt()
                     hashed_pw = bcrypt.hashpw(new_password.encode(), salt)
 
-                    conn = sqlite3.connect("uwc_connect.db")
+                    conn = sqlite3.connect("campus_connect.db")
                     conn.execute(
                         "UPDATE users SET password=?, salt=? WHERE email=?",
                         (hashed_pw, salt, st.session_state.temp_email)
@@ -437,7 +441,7 @@ def auth_system():
                     if st.session_state.reset_otp_attempts >= 3:
                         st.error("Too many failed attempts. Please start over.")
                         # Clean up reset request
-                        conn = sqlite3.connect("uwc_connect.db")
+                        conn = sqlite3.connect("campus_connect.db")
                         conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
                         conn.commit()
                         conn.close()
@@ -452,7 +456,7 @@ def auth_system():
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute(
                     "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
                     (email, new_otp, expiry)
@@ -467,7 +471,7 @@ def auth_system():
 
         with col3:
             if st.button("Cancel", key="cancel_reset_otp"):
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
                 conn.commit()
                 conn.close()
@@ -484,15 +488,15 @@ def auth_system():
 
     with login_tab:
         with st.form("login_form"):
-            email = st.text_input("UWC Email (e.g., s1234567@myuwc.ac.za)", key="login_email")
+            email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
             password = st.text_input("Password", type="password")
             remember_me = st.checkbox("Remember me")
 
             if st.form_submit_button("Login"):
-                if not is_valid_uwc_email(email):
-                    st.error("Invalid UWC email format. Must be like s1234567@myuwc.ac.za")
+                if not is_valid_student_email(email):
+                    st.error("Invalid student email format. Must start with 3 numbers")
                 else:
-                    conn = sqlite3.connect("uwc_connect.db")
+                    conn = sqlite3.connect("campus_connect.db")
                     c = conn.cursor()
                     c.execute("SELECT password, salt, verified FROM users WHERE email=?", (email,))
                     result = c.fetchone()
@@ -515,7 +519,7 @@ def auth_system():
                                     st.session_state.current_user = email
                                     st.experimental_set_query_params(logged_in=email)
                                     # Check if profile exists
-                                    conn = sqlite3.connect("uwc_connect.db")
+                                    conn = sqlite3.connect("campus_connect.db")
                                     profile_exists = conn.execute(
                                         "SELECT 1 FROM profiles WHERE email=?",
                                         (email,)
@@ -538,20 +542,20 @@ def auth_system():
 
     with register_tab:
         with st.form("register_form"):
-            email = st.text_input("UWC Email (e.g., s1234567@myuwc.ac.za)", key="register_email")
+            email = st.text_input("Student Email (must start with 3 numbers)", key="register_email")
             password = st.text_input("Create Password (min 8 characters)", type="password")
             confirm_password = st.text_input("Confirm Password", type="password")
 
             if st.form_submit_button("Create Account"):
-                if not is_valid_uwc_email(email):
-                    st.error("Invalid UWC email format. Must start with numbers (e.g., s1234567@myuwc.ac.za)")
+                if not is_valid_student_email(email):
+                    st.error("Invalid student email format. Must start with 3 numbers")
                 elif len(password) < 8:
                     st.error("Password must be at least 8 characters")
                 elif password != confirm_password:
                     st.error("Passwords do not match")
                 else:
                     # Check if email exists
-                    conn = sqlite3.connect("uwc_connect.db")
+                    conn = sqlite3.connect("campus_connect.db")
                     c = conn.cursor()
                     c.execute("SELECT 1 FROM users WHERE email=?", (email,))
                     if c.fetchone():
@@ -587,13 +591,13 @@ def forgot_password():
     st.title("Reset Your Password")
 
     with st.form("forgot_password_form"):
-        email = st.text_input("Enter your UWC email address")
+        email = st.text_input("Enter your student email address")
 
         if st.form_submit_button("Send OTP"):
-            if not is_valid_uwc_email(email):
-                st.error("Invalid UWC email format")
+            if not is_valid_student_email(email):
+                st.error("Invalid student email format")
             else:
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 user_exists = conn.execute(
                     "SELECT 1 FROM users WHERE email=?", (email,)
                 ).fetchone()
@@ -631,7 +635,7 @@ def create_profile():
     st.caption("Complete your profile to start connecting")
 
     with st.form("profile_form", clear_on_submit=True):
-        email = st.text_input("UWC Email", value=st.session_state.current_user, disabled=True)
+        email = st.text_input("Student Email", value=st.session_state.current_user, disabled=True)
         name = st.text_input("Full Name")
         age = st.slider("Age", 18, 30)
         gender = st.selectbox("Gender", ["Male", "Female", "Non-binary", "Prefer not to say"])
@@ -644,14 +648,6 @@ def create_profile():
         intention = st.radio("What are you looking for?",
                              ["Relationship", "Friendship", "Hookups", "Not sure yet"],
                              index=3)
-        
-        # Campus location selection
-        location = st.selectbox("Common Campus Location", [
-            "Library", "Student Center", "Science Building", 
-            "Arts Building", "Sports Complex", "Residence A",
-            "Residence B", "Main Cafeteria", "Engineering Building", 
-            "Admin Building"
-        ])
 
         # Photo uploader
         photo = st.file_uploader("Profile Photo (max 2MB)", type=["jpg", "png", "jpeg"],
@@ -670,12 +666,12 @@ def create_profile():
                     st.error("Photo exceeds 2MB size limit")
                     return
 
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute('''INSERT INTO profiles
-                                    (email, name, age, gender, bio, interests, photo, timestamp, intention, location)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    (email, name, age, gender, bio, interests, photo, timestamp, intention)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                              (st.session_state.current_user, name, age, gender, bio,
-                              ", ".join(interests), photo_data, datetime.now(), intention, location))
+                              ", ".join(interests), photo_data, datetime.now(), intention))
                 conn.commit()
                 conn.close()
 
@@ -689,7 +685,7 @@ def create_profile():
 
 # Profile Editing
 def edit_profile():
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     profile = conn.execute(
         "SELECT * FROM profiles WHERE email=?",
         (st.session_state.current_user,)
@@ -716,17 +712,6 @@ def edit_profile():
             "Sports", "Music", "Gaming", "Academics",
             "Art", "Travel", "Food", "Movies", "Dancing"
         ], default=current_interests)
-        
-        # Location editing
-        locations = [
-            "Library", "Student Center", "Science Building", 
-            "Arts Building", "Sports Complex", "Residence A",
-            "Residence B", "Main Cafeteria", "Engineering Building", 
-            "Admin Building"
-        ]
-        current_location = profile[9] if len(profile) > 9 else ""
-        location_index = locations.index(current_location) if current_location in locations else 0
-        location = st.selectbox("Common Campus Location", locations, index=location_index)
 
         # Show current photo if exists
         if profile[6]:
@@ -766,7 +751,7 @@ def edit_profile():
                     else:
                         photo_data = photo.read()
 
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 conn.execute('''UPDATE profiles
                                 SET name=?,
                                     age=?,
@@ -774,11 +759,10 @@ def edit_profile():
                                     bio=?,
                                     interests=?,
                                     photo=?,
-                                    intention=?,
-                                    location=?
+                                    intention=?
                                 WHERE email = ?''',
                              (name, age, gender, bio, ", ".join(interests),
-                              photo_data, intention, location, st.session_state.current_user))
+                              photo_data, intention, st.session_state.current_user))
                 conn.commit()
                 conn.close()
 
@@ -792,7 +776,7 @@ def edit_profile():
 
 # Record like action
 def record_like(from_email, to_email):
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     conn.execute(
         '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
            VALUES (?, ?, ?, ?, ?)''',
@@ -804,7 +788,7 @@ def record_like(from_email, to_email):
 
 # Record connection request
 def record_connection_request(from_email, to_email):
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     conn.execute(
         '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
            VALUES (?, ?, ?, ?, ?)''',
@@ -816,7 +800,7 @@ def record_connection_request(from_email, to_email):
 
 # Discover Profiles with optimized performance and swipe functionality
 def discover_profiles():
-    st.title("Discover UWC SINGLES🥰😍")
+    st.title("Discover People 🥰😍")
     current_user = st.session_state.current_user
     
     # Use cached profiles if available and recent (within 5 minutes)
@@ -842,7 +826,7 @@ def discover_profiles():
         st.session_state.current_index = 0
 
     # Unpack profile data
-    email, name, age, gender, bio, interests, photo, intention, location = available_profiles[
+    email, name, age, gender, bio, interests, photo, intention = available_profiles[
         st.session_state.current_index]
 
     # Display the profile with swipeable interface
@@ -876,8 +860,6 @@ def discover_profiles():
                     
                     # Profile info
                     st.caption(f"{gender} • Looking for: {intention}")
-                    if location:
-                        st.caption(f"📍 Common location: {location}")
                     st.write(bio)
                     st.write(f"**Interests:** {interests}")
             
@@ -911,7 +893,7 @@ def discover_profiles():
 
 # Get profiles with optimized query
 def get_profiles(current_user):
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     
     try:
         # Pre-fetch blocked users
@@ -924,7 +906,7 @@ def get_profiles(current_user):
         # Get profiles excluding current user and blocked users
         profiles = []
         for row in conn.execute(
-                '''SELECT email, name, age, gender, bio, interests, photo, intention, location
+                '''SELECT email, name, age, gender, bio, interests, photo, intention
                    FROM profiles
                    WHERE email != ?''',
                 (current_user,)
@@ -943,7 +925,7 @@ def get_profiles(current_user):
 # Connections Management
 def view_connections():
     current_user = st.session_state.current_user
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
 
     st.title("Your Connections")
 
@@ -1119,7 +1101,7 @@ def chat_interface():
     current_user = st.session_state.current_user
     other_user = st.session_state.current_chat
 
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     other_profile = conn.execute(
         "SELECT name, photo FROM profiles WHERE email=?",
         (other_user,)
@@ -1146,7 +1128,7 @@ def chat_interface():
     chat_id = "_".join(sorted([current_user, other_user]))
 
     # Get messages
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     messages = conn.execute(
         '''SELECT id, sender, receiver, message, time, read
            FROM messages
@@ -1234,7 +1216,7 @@ def chat_interface():
     # Message input
     if prompt := st.chat_input("Type a message..."):
         # Add message to database
-        conn = sqlite3.connect("uwc_connect.db")
+        conn = sqlite3.connect("campus_connect.db")
         conn.execute(
             '''INSERT INTO messages
                    (id, chat_id, sender, receiver, message, time, read)
@@ -1272,7 +1254,7 @@ def report_user():
 
         if submitted:
             report_id = str(uuid4())
-            conn = sqlite3.connect("uwc_connect.db")
+            conn = sqlite3.connect("campus_connect.db")
             conn.execute('''INSERT INTO reports
                                 (id, reporter_email, reported_email, reason, details, timestamp)
                             VALUES (?, ?, ?, ?, ?, ?)''',
@@ -1305,7 +1287,7 @@ def delete_account():
                 st.error("Please enter your password and confirm deletion")
             else:
                 # Verify password
-                conn = sqlite3.connect("uwc_connect.db")
+                conn = sqlite3.connect("campus_connect.db")
                 c = conn.cursor()
                 c.execute("SELECT password, salt FROM users WHERE email=?",
                           (st.session_state.current_user,))
@@ -1347,7 +1329,7 @@ def show_notifications():
     st.title("Notifications")
     for notification in st.session_state.notifications:
         if notification["type"] == "connection_accepted":
-            conn = sqlite3.connect("uwc_connect.db")
+            conn = sqlite3.connect("campus_connect.db")
             name = conn.execute(
                 "SELECT name FROM profiles WHERE email=?",
                 (notification["from_user"],)
@@ -1365,7 +1347,7 @@ def main():
     st.session_state.setdefault('server.maxSessionAge', 86400)
 
     st.set_page_config(
-        page_title="UWC Connect",
+        page_title="Campus Connect",
         page_icon="❤️",
         layout="wide",
         initial_sidebar_state="collapsed"
@@ -1435,11 +1417,11 @@ def main():
     # Navigation sidebar
     if st.session_state.current_user:
         with st.sidebar:
-            st.header("UWC Connect")
+            st.header("Campus Connect")
             st.divider()
 
             # Profile quick view
-            conn = sqlite3.connect("uwc_connect.db")
+            conn = sqlite3.connect("campus_connect.db")
             profile = conn.execute(
                 "SELECT name, photo FROM profiles WHERE email=?",
                 (st.session_state.current_user,)
@@ -1517,26 +1499,26 @@ def main():
         auth_system()
 
     # Add sample data if database is empty
-    conn = sqlite3.connect("uwc_connect.db")
+    conn = sqlite3.connect("campus_connect.db")
     # Insert sample data if empty
     if not conn.execute("SELECT 1 FROM profiles").fetchone():
         # Sample profiles
         sample_profiles = [
-            ("s123456@myuwc.ac.za", "Amanda K", 21, "Female",
+            ("123user1@example.com", "Amanda K", 21, "Female",
              "Psychology major who loves hiking and indie music",
-             "Music, Travel, Art", b"", datetime.now(), "Relationship", "Library"),
-            ("s234567@myuwc.ac.za", "James L", 22, "Male",
+             "Music, Travel, Art", b"", datetime.now(), "Relationship"),
+            ("234user2@example.com", "James L", 22, "Male",
              "Computer Science student and football enthusiast",
-             "Sports, Gaming, Movies", b"", datetime.now(), "Friendship", "Student Center"),
-            ("s345678@myuwc.ac.za", "Priya M", 20, "Female",
+             "Sports, Gaming, Movies", b"", datetime.now(), "Friendship"),
+            ("345user3@example.com", "Priya M", 20, "Female",
              "Art student passionate about street photography",
-             "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet", "Arts Building"),
-            ("s456789@myuwc.ac.za", "Thomas O", 23, "Male",
+             "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet"),
+            ("456user4@example.com", "Thomas O", 23, "Male",
              "Engineering student who plays guitar and loves jazz",
-             "Music, Technology, Science", b"", datetime.now(), "Hookups", "Engineering Building"),
-            ("s567890@myuwc.ac.za", "Naledi P", 19, "Female",
+             "Music, Technology, Science", b"", datetime.now(), "Hookups"),
+            ("567user5@example.com", "Naledi P", 19, "Female",
              "Environmental science major and vegan foodie",
-             "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship", "Main Cafeteria")
+             "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship")
         ]
 
         # Create sample users
@@ -1549,7 +1531,7 @@ def main():
             conn.execute("INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
                          (email, hashed_pw, salt, 1))
             conn.execute(
-                "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 profile)
 
         conn.commit()
