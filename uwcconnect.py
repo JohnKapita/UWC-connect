@@ -180,6 +180,9 @@ def init_session_state():
         st.session_state.reset_otp_attempts = 0
     if "temp_reset_email" not in st.session_state:  # Added missing state variable
         st.session_state.temp_reset_email = None
+    # Form validation state
+    if "form_errors" not in st.session_state:
+        st.session_state.form_errors = {}
 
 
 # Email validation with first 3 numbers requirement
@@ -629,18 +632,43 @@ def forgot_password():
         st.rerun()
 
 
-# Profile Creation
+# Profile Creation with form validation highlighting
 def create_profile():
     st.title("Create Your Profile")
     st.caption("Complete your profile to start connecting")
 
+    # Initialize form errors if not already set
+    if "form_errors" not in st.session_state:
+        st.session_state.form_errors = {
+            "name": False,
+            "bio": False,
+            "interests": False,
+            "photo": False
+        }
+
     with st.form("profile_form", clear_on_submit=True):
         email = st.text_input("Student Email", value=st.session_state.current_user, disabled=True)
-        name = st.text_input("Full Name")
+        
+        # Name field with validation
+        name_label = "Full Name*"
+        if st.session_state.form_errors["name"]:
+            name_label = f":red[{name_label}]"
+        name = st.text_input(name_label)
+        
         age = st.slider("Age", 18, 30)
         gender = st.selectbox("Gender", ["Male", "Female", "Non-binary", "Prefer not to say"])
-        bio = st.text_area("About Me", placeholder="Tell others about yourself...")
-        interests = st.multiselect("Interests", [
+        
+        # Bio field with validation
+        bio_label = "About Me*"
+        if st.session_state.form_errors["bio"]:
+            bio_label = f":red[{bio_label}]"
+        bio = st.text_area(bio_label, placeholder="Tell others about yourself...")
+        
+        # Interests field with validation
+        interests_label = "Interests*"
+        if st.session_state.form_errors["interests"]:
+            interests_label = f":red[{interests_label}]"
+        interests = st.multiselect(interests_label, [
             "Sports", "Music", "Gaming", "Academics",
             "Art", "Travel", "Food", "Movies", "Dancing"
         ])
@@ -649,21 +677,42 @@ def create_profile():
                              ["Relationship", "Friendship", "Hookups", "Not sure yet"],
                              index=3)
 
-        # Photo uploader
-        photo = st.file_uploader("Profile Photo (max 2MB)", type=["jpg", "png", "jpeg"],
+        # Photo uploader with validation
+        photo_label = "Profile Photo (max 10MB)*"
+        if st.session_state.form_errors["photo"]:
+            photo_label = f":red[{photo_label}]"
+        photo = st.file_uploader(photo_label, type=["jpg", "png", "jpeg"],
                                  accept_multiple_files=False)
 
         if st.form_submit_button("Save Profile"):
-            # Validation
-            if not name or not bio or not interests or not photo:
-                st.error("Please fill in all required fields and upload a photo")
-                return
-
+            # Reset form errors
+            st.session_state.form_errors = {
+                "name": False,
+                "bio": False,
+                "interests": False,
+                "photo": False
+            }
+            
+            # Validate fields
+            if not name:
+                st.session_state.form_errors["name"] = True
+            if not bio:
+                st.session_state.form_errors["bio"] = True
+            if not interests:
+                st.session_state.form_errors["interests"] = True
+            if not photo:
+                st.session_state.form_errors["photo"] = True
+                
+            # Check if any errors exist
+            if any(st.session_state.form_errors.values()):
+                st.error("Please fill in all required fields marked in red")
+                st.rerun()
+                
             try:
-                # Read and verify photo
+                # Read and verify photo (10MB limit)
                 photo_data = photo.read()
-                if len(photo_data) > 2 * 1024 * 1024:  # 2MB limit
-                    st.error("Photo exceeds 2MB size limit")
+                if len(photo_data) > 10 * 1024 * 1024:
+                    st.error("Photo exceeds 10MB size limit")
                     return
 
                 conn = sqlite3.connect("campus_connect.db")
@@ -720,7 +769,7 @@ def edit_profile():
             except:
                 st.image("default_profile.png", width=150, caption="Current Photo")
 
-        photo = st.file_uploader("Update Profile Photo (leave empty to keep current)",
+        photo = st.file_uploader("Update Profile Photo (max 10MB, leave empty to keep current)",
                                  type=["jpg", "png", "jpeg"],
                                  accept_multiple_files=False)
 
@@ -746,8 +795,9 @@ def edit_profile():
                 # Use new photo if provided, otherwise keep existing
                 photo_data = profile[6]
                 if photo:
-                    if photo.size > 2 * 1024 * 1024:  # 2MB limit
-                        st.error("Photo size must be less than 2MB")
+                    if photo.size > 10 * 1024 * 1024:  # 10MB limit
+                        st.error("Photo size must be less than 10MB")
+                        return
                     else:
                         photo_data = photo.read()
 
@@ -1096,7 +1146,7 @@ def view_connections():
     conn.close()
 
 
-# Chat Interface
+# Chat Interface - Fixed to match your screenshot
 def chat_interface():
     current_user = st.session_state.current_user
     other_user = st.session_state.current_chat
@@ -1149,7 +1199,7 @@ def chat_interface():
     conn.commit()
     conn.close()
 
-    # FIXED: Create a scrollable chat container using CSS
+    # Fixed chat container using CSS to match your screenshot
     st.markdown(
         """
         <style>
@@ -1161,70 +1211,118 @@ def chat_interface():
             border-radius: 10px;
             margin-bottom: 20px;
         }
+        .chat-bubble {
+            margin: 10px 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .sender-bubble {
+            align-items: flex-end;
+        }
+        .receiver-bubble {
+            align-items: flex-start;
+        }
+        .bubble-content {
+            max-width: 70%;
+            padding: 10px 15px;
+            border-radius: 15px;
+            position: relative;
+        }
+        .sender-content {
+            background-color: #4a4e69;
+            margin-left: 30%;
+        }
+        .receiver-content {
+            background-color: #2d3039;
+            margin-right: 30%;
+        }
+        .timestamp {
+            font-size: 0.7em;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        .receiver-info {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .receiver-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            margin-right: 10px;
+            object-fit: cover;
+        }
         </style>
         """, 
         unsafe_allow_html=True
     )
     
     # Display chat messages in scrollable container
-    chat_container = st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-    
-    # We'll build the chat HTML content
-    chat_content = ""
-    for msg in messages:
-        msg_id, sender, receiver, message, msg_time, read = msg
+    chat_container = st.container()
+    with chat_container:
+        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
         
-        # FIX: Convert string timestamp to datetime object if needed
-        if isinstance(msg_time, str):
-            try:
-                # Handle both timestamp formats
-                if '.' in msg_time:
-                    msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S.%f")
-                else:
-                    msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S")
-            except:
-                msg_time = datetime.now()
-        
-        # Format the time as HH:MM
-        timestamp = msg_time.strftime("%H:%M")
-        
-        if sender == current_user:
-            chat_content += f"""
-            <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-                <div style="background-color:#4a4e69; padding:10px; border-radius:15px; max-width:70%;">
-                    <div>{message}</div>
-                    <div style="text-align:right; font-size:0.8em; color:#aaa;">{timestamp}</div>
-                </div>
-            </div>
-            """
-        else:
-            avatar_html = "👤"
-            if other_photo:
+        for msg in messages:
+            msg_id, sender, receiver, message, msg_time, read = msg
+            
+            # Convert timestamp if needed
+            if isinstance(msg_time, str):
                 try:
-                    # Convert to base64 for HTML embedding
-                    img = Image.open(io.BytesIO(other_photo))
-                    buffered = io.BytesIO()
-                    img.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-                    avatar_html = f'<img src="data:image/png;base64,{img_str}" style="width:30px; height:30px; border-radius:50%;">'
+                    if '.' in msg_time:
+                        msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S")
                 except:
-                    pass
-                    
-            chat_content += f"""
-            <div style="display:flex; justify-content:flex-start; margin-bottom:10px;">
-                <div style="margin-right:10px;">
-                    {avatar_html}
-                </div>
-                <div style="background-color:#2d3039; padding:10px; border-radius:15px; max-width:70%;">
-                    <div>{message}</div>
-                    <div style="text-align:left; font-size:0.8em; color:#aaa;">{timestamp}</div>
-                </div>
-            </div>
-            """
-    
-    # Close the chat container div and add content
-    chat_container.empty()
-    st.markdown(f'<div class="chat-container">{chat_content}</div>', unsafe_allow_html=True)
+                    msg_time = datetime.now()
+            
+            # Format the time as HH:MM
+            timestamp = msg_time.strftime("%H:%M")
+            
+            if sender == current_user:
+                # Sender (current user) message
+                st.markdown(
+                    f"""
+                    <div class="chat-bubble sender-bubble">
+                        <div class="bubble-content sender-content">
+                            <div>{message}</div>
+                            <div class="timestamp" style="text-align: right;">{timestamp}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                # Receiver message with avatar
+                avatar_html = "👤"
+                if other_photo:
+                    try:
+                        # Convert to base64 for HTML embedding
+                        img = Image.open(io.BytesIO(other_photo))
+                        buffered = io.BytesIO()
+                        img.save(buffered, format="PNG")
+                        img_str = base64.b64encode(buffered.getvalue()).decode()
+                        avatar_html = f'<img src="data:image/png;base64,{img_str}" class="receiver-avatar">'
+                    except:
+                        pass
+                
+                st.markdown(
+                    f"""
+                    <div class="chat-bubble receiver-bubble">
+                        <div class="receiver-info">
+                            {avatar_html}
+                            <div><strong>{other_name}</strong></div>
+                        </div>
+                        <div class="bubble-content receiver-content">
+                            <div>{message}</div>
+                            <div class="timestamp">{timestamp}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # Message input
     if prompt := st.chat_input("Type a message..."):
@@ -1354,7 +1452,7 @@ def show_notifications():
             st.divider()
 
 
-# Main App
+# Main App with persistent sessions
 def main():
     # Set session lifetime to 1 day (prevents logout when screen off)
     st.session_state.setdefault('server.maxSessionAge', 86400)
@@ -1420,6 +1518,14 @@ def main():
         padding: 2px 6px;
         font-size: 0.8em;
         margin-left: 5px;
+    }
+    /* Form error styling */
+    .stTextInput>div>div>input:focus:not(:focus-visible) {
+        box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25);
+        border-color: #dc3545;
+    }
+    .stTextInput>div>div>input {
+        border-color: #dc3545 !important;
     }
     </style>
     """, unsafe_allow_html=True)
