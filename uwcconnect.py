@@ -182,7 +182,12 @@ def init_session_state():
         st.session_state.temp_reset_email = None
     # Form validation state
     if "form_errors" not in st.session_state:
-        st.session_state.form_errors = {}
+        st.session_state.form_errors = {
+            "name": False,
+            "bio": False,
+            "interests": False,
+            "photo": False
+        }
 
 
 # Email validation with first 3 numbers requirement
@@ -637,7 +642,7 @@ def create_profile():
     st.title("Create Your Profile")
     st.caption("Complete your profile to start connecting")
 
-    # Initialize form errors if not already set
+    # Initialize form errors
     if "form_errors" not in st.session_state:
         st.session_state.form_errors = {
             "name": False,
@@ -651,7 +656,7 @@ def create_profile():
         
         # Name field with validation
         name_label = "Full Name*"
-        if st.session_state.form_errors["name"]:
+        if st.session_state.form_errors.get("name", False):
             name_label = f":red[{name_label}]"
         name = st.text_input(name_label)
         
@@ -660,13 +665,13 @@ def create_profile():
         
         # Bio field with validation
         bio_label = "About Me*"
-        if st.session_state.form_errors["bio"]:
+        if st.session_state.form_errors.get("bio", False):
             bio_label = f":red[{bio_label}]"
         bio = st.text_area(bio_label, placeholder="Tell others about yourself...")
         
         # Interests field with validation
         interests_label = "Interests*"
-        if st.session_state.form_errors["interests"]:
+        if st.session_state.form_errors.get("interests", False):
             interests_label = f":red[{interests_label}]"
         interests = st.multiselect(interests_label, [
             "Sports", "Music", "Gaming", "Academics",
@@ -679,12 +684,15 @@ def create_profile():
 
         # Photo uploader with validation
         photo_label = "Profile Photo (max 10MB)*"
-        if st.session_state.form_errors["photo"]:
+        if st.session_state.form_errors.get("photo", False):
             photo_label = f":red[{photo_label}]"
         photo = st.file_uploader(photo_label, type=["jpg", "png", "jpeg"],
                                  accept_multiple_files=False)
 
-        if st.form_submit_button("Save Profile"):
+        # FIXED: Add submit button correctly
+        submitted = st.form_submit_button("Save Profile")
+        
+        if submitted:
             # Reset form errors
             st.session_state.form_errors = {
                 "name": False,
@@ -1146,7 +1154,7 @@ def view_connections():
     conn.close()
 
 
-# Chat Interface - Fixed to match your screenshot
+# Simplified Chat Interface
 def chat_interface():
     current_user = st.session_state.current_user
     other_user = st.session_state.current_chat
@@ -1199,7 +1207,7 @@ def chat_interface():
     conn.commit()
     conn.close()
 
-    # Fixed chat container using CSS to match your screenshot
+    # Fixed chat container
     st.markdown(
         """
         <style>
@@ -1211,47 +1219,24 @@ def chat_interface():
             border-radius: 10px;
             margin-bottom: 20px;
         }
-        .chat-bubble {
-            margin: 10px 0;
-            display: flex;
-            flex-direction: column;
-        }
-        .sender-bubble {
-            align-items: flex-end;
-        }
-        .receiver-bubble {
-            align-items: flex-start;
-        }
-        .bubble-content {
-            max-width: 70%;
-            padding: 10px 15px;
-            border-radius: 15px;
-            position: relative;
-        }
-        .sender-content {
+        .sender {
             background-color: #4a4e69;
+            padding: 10px;
+            border-radius: 15px;
+            margin-bottom: 10px;
             margin-left: 30%;
+            text-align: right;
         }
-        .receiver-content {
+        .receiver {
             background-color: #2d3039;
+            padding: 10px;
+            border-radius: 15px;
+            margin-bottom: 10px;
             margin-right: 30%;
         }
         .timestamp {
             font-size: 0.7em;
             color: #aaa;
-            margin-top: 5px;
-        }
-        .receiver-info {
-            display: flex;
-            align-items: center;
-            margin-bottom: 5px;
-        }
-        .receiver-avatar {
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            margin-right: 10px;
-            object-fit: cover;
         }
         </style>
         """, 
@@ -1259,8 +1244,7 @@ def chat_interface():
     )
     
     # Display chat messages in scrollable container
-    chat_container = st.container()
-    with chat_container:
+    with st.container():
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
         
         for msg in messages:
@@ -1280,45 +1264,13 @@ def chat_interface():
             timestamp = msg_time.strftime("%H:%M")
             
             if sender == current_user:
-                # Sender (current user) message
                 st.markdown(
-                    f"""
-                    <div class="chat-bubble sender-bubble">
-                        <div class="bubble-content sender-content">
-                            <div>{message}</div>
-                            <div class="timestamp" style="text-align: right;">{timestamp}</div>
-                        </div>
-                    </div>
-                    """,
+                    f'<div class="sender">{message}<div class="timestamp">{timestamp}</div></div>', 
                     unsafe_allow_html=True
                 )
             else:
-                # Receiver message with avatar
-                avatar_html = "👤"
-                if other_photo:
-                    try:
-                        # Convert to base64 for HTML embedding
-                        img = Image.open(io.BytesIO(other_photo))
-                        buffered = io.BytesIO()
-                        img.save(buffered, format="PNG")
-                        img_str = base64.b64encode(buffered.getvalue()).decode()
-                        avatar_html = f'<img src="data:image/png;base64,{img_str}" class="receiver-avatar">'
-                    except:
-                        pass
-                
                 st.markdown(
-                    f"""
-                    <div class="chat-bubble receiver-bubble">
-                        <div class="receiver-info">
-                            {avatar_html}
-                            <div><strong>{other_name}</strong></div>
-                        </div>
-                        <div class="bubble-content receiver-content">
-                            <div>{message}</div>
-                            <div class="timestamp">{timestamp}</div>
-                        </div>
-                    </div>
-                    """,
+                    f'<div class="receiver">{message}<div class="timestamp">{timestamp}</div></div>', 
                     unsafe_allow_html=True
                 )
         
