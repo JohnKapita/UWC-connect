@@ -1,6 +1,20 @@
-streamlit==1.29.0
-pandas==2.2.2  # Must update for Python 3.12!
+# Core dependencies
+streamlit==1.32.2
+pandas==2.2.2
 Pillow==10.4.0
 bcrypt==4.1.2
 python-dotenv==1.0.0
-packaging==23.2  # Downgraded from 24.0
+packaging==23.2
+
+# Crypto and security
+cryptography==42.0.5  # Known stable version with Python 3.12
+pyotp==2.9.0
+cffi==1.16.0  # Required for cryptography
+
+# WebRTC and video processing
+streamlit-webrtc==0.50.1
+av==12.0.0
+
+# Additional dependencies
+sqlalchemy==2.0.30  # For database operations
+pyopenssl==24.1.0  # SSL support
