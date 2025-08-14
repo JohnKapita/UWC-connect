@@ -1,362 +1,1202 @@
-# Imports
 import streamlit as st
-import sqlite3
-import bcrypt
-import io
-import json
-import time
-from uuid import uuid4
-from datetime import datetime, timedelta
-from PIL import Image
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
-from pathlib import Path
+import pandas as pd
 import random
-import string
 import base64
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-import mimetypes
-import requests
-import functools
-import threading
-import logging
+from datetime import datetime, timedelta
+import time
+import bcrypt
+from uuid import uuid4
+import sqlite3
 import os
 import re
-import html
+import smtplib
+from email.mime.text import MIMEText
+from dotenv import load_dotenv
+from PIL import Image
+import io
+import math
+import logging
+from cryptography.fernet import Fernet
+import hashlib
+import hmac
+import json
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
+import binascii
 
-# Constants
-PEPPER_SECRET = "SuperSecretPepper123!"
-DATABASE_FILE = "campus_connect.db"
-RTC_CONFIGURATION = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+# Load environment variables
+load_dotenv()
 
-# Initialize security logger
-def log_security_event(event, details):
-    entry = json.dumps({
-        "timestamp": datetime.now().isoformat(),
-        "event": event,
-        "details": details
-    })
-    with open("security.log", "a") as f:
-        f.write(entry + "\n")
+# Security configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+PEPPER_SECRET = os.getenv("PEPPER_SECRET", "default-pepper-secret")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
 
-# Database connection helper
-@functools.lru_cache(maxsize=32)
+# Initialize encryption
+cipher_suite = Fernet(ENCRYPTION_KEY.encode())
+
+# WebRTC configuration
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+# Database connection manager
 def get_db_connection():
-    conn = sqlite3.connect(DATABASE_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect("campus_connect.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
-# Initialize database schema
+# Initialize database with proper schema
 def init_database():
     with get_db_connection() as conn:
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-                        email TEXT PRIMARY KEY,
-                        password BLOB NOT NULL,
-                        salt BLOB NOT NULL,
-                        verified INTEGER DEFAULT 0,
-                        banned INTEGER DEFAULT 0
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS profiles (
-                        email TEXT PRIMARY KEY,
-                        name TEXT,
-                        age INTEGER,
-                        gender TEXT,
-                        bio TEXT,
-                        interests TEXT,
-                        photo BLOB,
-                        timestamp TIMESTAMP,
-                        intention TEXT
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS connections (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        from_email TEXT,
-                        to_email TEXT,
-                        status TEXT,
-                        timestamp TIMESTAMP
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS messages (
-                        id TEXT PRIMARY KEY,
-                        chat_id TEXT,
-                        sender TEXT,
-                        receiver TEXT,
-                        message TEXT,
-                        time TIMESTAMP,
-                        read INTEGER DEFAULT 0
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS reports (
-                        id TEXT PRIMARY KEY,
-                        reporter_email TEXT,
-                        reported_email TEXT,
-                        reason TEXT,
-                        details TEXT,
-                        timestamp TIMESTAMP,
-                        status TEXT DEFAULT 'pending'
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS admins (
-                        email TEXT PRIMARY KEY
-                    )''')
+
+        # Create users table
+        c.execute('''CREATE TABLE IF NOT EXISTS users
+                     (
+                         email TEXT PRIMARY KEY,
+                         password TEXT,
+                         salt TEXT,
+                         verified BOOLEAN DEFAULT 0,
+                         otp TEXT,
+                         otp_expiry DATETIME,
+                         last_active DATETIME,
+                         login_attempts INTEGER DEFAULT 0,
+                         last_attempt DATETIME,
+                         banned BOOLEAN DEFAULT 0
+                     )''')
+
+        # Create profiles table
+        c.execute('''CREATE TABLE IF NOT EXISTS profiles
+                     (
+                         email TEXT PRIMARY KEY,
+                         name TEXT,
+                         age INTEGER,
+                         gender TEXT,
+                         bio TEXT,
+                         interests TEXT,
+                         photo BLOB,
+                         timestamp DATETIME,
+                         intention TEXT DEFAULT 'Not sure yet'
+                     )''')
+
+        # Create connections table
+        c.execute('''CREATE TABLE IF NOT EXISTS connections
+                     (
+                         id TEXT PRIMARY KEY,
+                         from_email TEXT,
+                         to_email TEXT,
+                         status TEXT,
+                         timestamp DATETIME
+                     )''')
+
+        # Create messages table
+        c.execute('''CREATE TABLE IF NOT EXISTS messages
+                     (
+                         id TEXT PRIMARY KEY,
+                         chat_id TEXT,
+                         sender TEXT,
+                         receiver TEXT,
+                         message TEXT,
+                         time DATETIME,
+                         read BOOLEAN DEFAULT 0
+                     )''')
+
+        # Create reports table
+        c.execute('''CREATE TABLE IF NOT EXISTS reports
+                     (
+                         id TEXT PRIMARY KEY,
+                         reporter_email TEXT,
+                         reported_email TEXT,
+                         reason TEXT,
+                         details TEXT,
+                         timestamp DATETIME,
+                         status TEXT DEFAULT 'pending'
+                     )''')
+
+        # Create password resets table
+        c.execute('''CREATE TABLE IF NOT EXISTS password_resets
+                     (
+                         email TEXT PRIMARY KEY,
+                         otp TEXT,
+                         expiry DATETIME
+                     )''')
+
+        # Create blocked users table
+        c.execute('''CREATE TABLE IF NOT EXISTS blocked_users
+                     (
+                         blocker_email TEXT,
+                         blocked_email TEXT,
+                         timestamp DATETIME,
+                         PRIMARY KEY (blocker_email, blocked_email)
+                     )''')
+        
+        # Create admins table
+        c.execute('''CREATE TABLE IF NOT EXISTS admins
+                     (
+                         email TEXT PRIMARY KEY
+                     )''')
+
+        # Add indexes for performance
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_email)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_email)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_users_verified ON users(verified)''')
+        
+        # Ensure admin exists
+        c.execute("INSERT OR IGNORE INTO admins (email) VALUES (?)", (ADMIN_EMAIL,))
         conn.commit()
 
-# Session helpers
+# Initialize session state
 def init_session_state():
+    # FIX: Initialize current_user to None if not set
     if "current_user" not in st.session_state:
         st.session_state.current_user = None
+        # Check for session token in URL
+        if st.query_params.get("session_token"):
+            valid_email = validate_session(st.query_params.get("session_token"))
+            if valid_email:
+                st.session_state.current_user = valid_email
+                st.session_state.session_token = st.query_params.get("session_token")
+    
     if "view" not in st.session_state:
         st.session_state.view = "auth"
+    if "current_chat" not in st.session_state:
+        st.session_state.current_chat = None
+    if "current_index" not in st.session_state:
+        st.session_state.current_index = 0
     if "notifications" not in st.session_state:
         st.session_state.notifications = []
-    if "session_token" not in st.session_state:
-        st.session_state.session_token = None
+    if "pending_verification" not in st.session_state:
+        st.session_state.pending_verification = False
+    if "temp_email" not in st.session_state:
+        st.session_state.temp_email = None
+    if "temp_password" not in st.session_state:
+        st.session_state.temp_password = None
+    if "otp_attempts" not in st.session_state:
+        st.session_state.otp_attempts = 0
+    if "resetting_password" not in st.session_state:
+        st.session_state.resetting_password = False
+    if "reporting_user" not in st.session_state:
+        st.session_state.reporting_user = None
+    if "reporting_name" not in st.session_state:
+        st.session_state.reporting_name = None
+    if "profiles_cache" not in st.session_state:
+        st.session_state.profiles_cache = None
+    if "cache_timestamp" not in st.session_state:
+        st.session_state.cache_timestamp = None
+    if "swipe_x" not in st.session_state:
+        st.session_state.swipe_x = 0
+    if "swipe_y" not in st.session_state:
+        st.session_state.swipe_y = 0
+    if "swipe_start" not in st.session_state:
+        st.session_state.swipe_start = None
+    if "swipe_action" not in st.session_state:
+        st.session_state.swipe_action = None
     if "reset_otp_verification" not in st.session_state:
         st.session_state.reset_otp_verification = False
+    if "reset_otp_attempts" not in st.session_state:
+        st.session_state.reset_otp_attempts = 0
+    if "temp_reset_email" not in st.session_state:
+        st.session_state.temp_reset_email = None
+    if "form_errors" not in st.session_state:
+        st.session_state.form_errors = {
+            "name": False,
+            "bio": False,
+            "interests": False,
+            "photo": False
+        }
+    if "call_state" not in st.session_state:
+        st.session_state.call_state = None
+    if "caller" not in st.session_state:
+        st.session_state.caller = None
+    if "callee" not in st.session_state:
+        st.session_state.callee = None
+    if "current_call" not in st.session_state:
+        st.session_state.current_call = None
+    if "login_attempts" not in st.session_state:
+        st.session_state.login_attempts = {}
+    if "session_token" not in st.session_state:
+        st.session_state.session_token = None
+    if "csrf_token" not in st.session_state:
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
 
-# -----------------------------
-# Authentication System
-# -----------------------------
+# Security functions
+def encrypt_data(data):
+    """Encrypt sensitive data before storage"""
+    if isinstance(data, str):
+        data = data.encode()
+    return cipher_suite.encrypt(data)
+
+def decrypt_data(encrypted_data):
+    """Decrypt data for use"""
+    return cipher_suite.decrypt(encrypted_data).decode()
+
+def sanitize_input(input_str, max_length=255):
+    """Sanitize user input to prevent XSS and injection attacks"""
+    # Remove potentially dangerous characters
+    sanitized = re.sub(r'[<>"\'%;()&]', '', input_str)
+    # Truncate to max length
+    return sanitized[:max_length]
+
+def create_session(email):
+    """Create secure session token"""
+    session_data = {
+        "email": email,
+        "created": datetime.now().isoformat(),
+        "expires": (datetime.now() + timedelta(hours=1)).isoformat()
+    }
+    data_str = json.dumps(session_data)
+    signature = hmac.new(
+        SECRET_KEY.encode(),
+        data_str.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    return f"{data_str}|{signature}"
+
+def validate_session(token):
+    """Validate session token"""
+    if not token:
+        return False
+        
+    try:
+        data_str, signature = token.split("|")
+        expected_signature = hmac.new(
+            SECRET_KEY.encode(),
+            data_str.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            return False
+            
+        session_data = json.loads(data_str)
+        if datetime.fromisoformat(session_data["expires"]) < datetime.now():
+            return False
+            
+        return session_data["email"]
+    except:
+        return False
+
+# Configure security logging
+logging.basicConfig(
+    filename='security.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def log_security_event(event_type, details, user=None):
+    """Log security events"""
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "event": event_type,
+        "user": user or st.session_state.get("current_user", "anonymous"),
+        "details": details,
+        "ip": st.experimental_user.get("ip", "unknown")
+    }
+    logging.info(json.dumps(entry))
+
+# Email validation
+def is_valid_student_email(email):
+    if not email:
+        return False
+    if len(email) < 3 or not email[:3].isdigit():
+        return False
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+# Generate random 6-digit OTP
+def generate_otp():
+    return str(random.randint(100000, 999999))
+
+# Email functions
+def send_otp_email(receiver_email, otp):
+    sender_email = os.getenv("SMTP_EMAIL")
+    sender_password = os.getenv("SMTP_PASSWORD")
+
+    if not sender_email or not sender_password:
+        st.error("Email configuration error. Please check your .env file")
+        return False
+
+    message = MIMEText(f"""Your Campus Connect verification code is: {otp}
+
+This code will expire in 10 minutes.""")
+    message['Subject'] = "Verify Your Campus Connect Account"
+    message['From'] = sender_email
+    message['To'] = receiver_email
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, message.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Failed to send OTP: {str(e)}")
+        return False
+
+def send_reset_otp_email(receiver_email, otp):
+    sender_email = os.getenv("SMTP_EMAIL")
+    sender_password = os.getenv("SMTP_PASSWORD")
+
+    if not sender_email or not sender_password:
+        st.error("Email configuration error. Please check your .env file")
+        return False
+
+    message = MIMEText(f"""You requested a password reset for your Campus Connect account.
+
+Your password reset code is: {otp}
+
+This code will expire in 10 minutes.
+
+If you didn't request this, please ignore this email.""")
+    message['Subject'] = "Password Reset OTP - Campus Connect"
+    message['From'] = sender_email
+    message['To'] = receiver_email
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, message.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Failed to send reset OTP: {str(e)}")
+        return False
+
+def send_report_notification(reporter, reported, reason, details):
+    message = MIMEText(f"""New User Report on Campus Connect:
+    
+Reporter: {reporter}
+Reported User: {reported}
+Reason: {reason}
+Details: {details}
+
+Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+""")
+    message['Subject'] = "⚠️ New User Report - Campus Connect"
+    message['From'] = os.getenv("SMTP_EMAIL")
+    message['To'] = ADMIN_EMAIL
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(os.getenv("SMTP_EMAIL"), os.getenv("SMTP_PASSWORD"))
+            server.sendmail(os.getenv("SMTP_EMAIL"), ADMIN_EMAIL, message.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Failed to send report notification: {str(e)}")
+        return False
+
+# Verify OTPs
+def verify_otp_in_db(email, user_otp):
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT otp, otp_expiry FROM users WHERE email=?", (email,))
+        result = c.fetchone()
+
+    if not result or not result["otp"]:
+        return False
+
+    stored_otp = result["otp"]
+    expiry_str = result["otp_expiry"]
+    expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S.%f") if '.' in expiry_str else datetime.strptime(
+        expiry_str, "%Y-%m-%d %H:%M:%S")
+
+    return stored_otp == user_otp and datetime.now() < expiry
+
+def verify_reset_otp(email, user_otp):
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT otp, expiry FROM password_resets WHERE email=?", (email,))
+        result = c.fetchone()
+
+    if not result or not result["otp"]:
+        return False
+
+    stored_otp = result["otp"]
+    expiry_str = result["expiry"]
+    expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S.%f") if '.' in expiry_str else datetime.strptime(
+        expiry_str, "%Y-%m-%d %H:%M:%S")
+
+    return stored_otp == user_otp and datetime.now() < expiry
+
+# Authentication system
 def auth_system():
-    st.title("Campus Connect Login / Signup")
+    st.title("Campus Connect 🔐😍❤️")
+    st.subheader("Student social connection platform")
+    
+    # Compliance notice
+    st.info("""
+    **Compliance Notice:**  
+    This platform is for social networking purposes only. All users must adhere to their institution's code of conduct.
+    """)
 
-    if st.session_state.reset_otp_verification:
-        forgot_password()
-        return
+    # OTP Verification Screen
+    if st.session_state.pending_verification:
+        email = st.session_state.temp_email
+        st.subheader(f"Verify {email}")
 
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
-        if submitted:
-            with get_db_connection() as conn:
-                user = conn.execute(
-                    "SELECT password, salt, banned FROM users WHERE email=?",
-                    (email,)
-                ).fetchone()
-                if user:
-                    if user["banned"]:
-                        st.error("Your account is banned")
-                        return
-                    hashed_pw = user["password"]
-                    salt = user["salt"]
-                    peppered_password = password + PEPPER_SECRET
-                    if bcrypt.hashpw(peppered_password.encode(), salt) == hashed_pw:
-                        st.session_state.current_user = email
-                        st.session_state.session_token = create_session(email)
-                        st.session_state.view = "discover"
-                        st.rerun()
-                    else:
-                        st.error("Incorrect password")
-                else:
-                    st.error("User not found")
+        user_otp = st.text_input("Enter 6-digit OTP", max_chars=6, key="otp_input")
 
-    st.markdown("---")
-    st.subheader("New here? Create an account")
-    with st.form("signup_form"):
-        new_email = st.text_input("Email", key="signup_email")
-        new_password = st.text_input("Password", type="password", key="signup_password")
-        confirm_password = st.text_input("Confirm Password", type="password", key="signup_confirm")
-        submitted_signup = st.form_submit_button("Sign Up")
-        if submitted_signup:
-            if new_password != confirm_password:
-                st.error("Passwords do not match")
-            else:
-                salt = bcrypt.gensalt()
-                peppered_password = new_password + PEPPER_SECRET
-                hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
-                with get_db_connection() as conn:
-                    try:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Verify", type="primary"):
+                if verify_otp_in_db(email, user_otp):
+                    salt = bcrypt.gensalt()
+                    # Add pepper to password
+                    peppered_password = st.session_state.temp_password + PEPPER_SECRET
+                    hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
+
+                    with get_db_connection() as conn:
                         conn.execute(
-                            "INSERT INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
-                            (new_email, hashed_pw, salt, 0)
+                            "UPDATE users SET password=?, salt=?, verified=1, otp=NULL, otp_expiry=NULL WHERE email=?",
+                            (hashed_pw, salt, email)
                         )
                         conn.commit()
-                        st.success("Account created! Please create your profile.")
-                        st.session_state.current_user = new_email
-                        st.session_state.view = "profile"
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Email already exists")
 
-# -----------------------------
-# Forgot Password
-# -----------------------------
-def forgot_password():
-    st.title("Forgot Password")
-    email = st.text_input("Enter your email to reset password")
-    if st.button("Send Reset Link"):
-        with get_db_connection() as conn:
-            user_exists = conn.execute(
-                "SELECT 1 FROM users WHERE email=?",
-                (email,)
-            ).fetchone()
-        if user_exists:
-            reset_token = str(uuid4())
-            st.session_state.reset_token = reset_token
-            st.session_state.reset_email = email
-            st.success(f"Reset link sent! (Simulation) Token: {reset_token}")
-        else:
-            st.error("Email not found")
-    
-    if st.session_state.get("reset_token"):
-        new_password = st.text_input("Enter new password", type="password")
-        confirm_password = st.text_input("Confirm new password", type="password")
-        if st.button("Reset Password"):
-            if new_password != confirm_password:
-                st.error("Passwords do not match")
-            else:
-                salt = bcrypt.gensalt()
-                peppered_password = new_password + PEPPER_SECRET
-                hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
+                    st.session_state.current_user = email
+                    st.session_state.session_token = create_session(email)
+                    st.query_params["session_token"] = st.session_state.session_token
+                    st.session_state.pending_verification = False
+                    st.session_state.view = "profile"
+                    st.success("Account verified! Please create your profile.")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.session_state.otp_attempts += 1
+                    if st.session_state.otp_attempts >= 3:
+                        st.error("Too many failed attempts. Please register again.")
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM users WHERE email=?", (email,))
+                            conn.commit()
+                        st.session_state.pending_verification = False
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("Invalid OTP. Please try again.")
+
+        with col2:
+            if st.button("Resend OTP"):
+                new_otp = generate_otp()
+                expiry = datetime.now() + timedelta(minutes=10)
+
                 with get_db_connection() as conn:
                     conn.execute(
-                        "UPDATE users SET password=?, salt=? WHERE email=?",
-                        (hashed_pw, salt, st.session_state.reset_email)
+                        "UPDATE users SET otp=?, otp_expiry=? WHERE email=?",
+                        (new_otp, expiry, email)
                     )
                     conn.commit()
-                st.success("Password reset successfully")
-                st.session_state.reset_token = None
-                st.session_state.reset_email = None
-                st.session_state.view = "auth"
+
+                if send_otp_email(email, new_otp):
+                    st.success("New OTP sent!")
+                else:
+                    st.error("Failed to resend OTP")
+
+        with col3:
+            if st.button("Cancel"):
+                with get_db_connection() as conn:
+                    conn.execute("DELETE FROM users WHERE email=?", (email,))
+                    conn.commit()
+
+                st.session_state.pending_verification = False
+                st.info("Registration cancelled")
+                time.sleep(1)
                 st.rerun()
 
-# -----------------------------
-# Profile Creation
-# -----------------------------
-def create_profile():
-    st.title("Create Your Profile")
-    with st.form("profile_form"):
-        name = st.text_input("Name")
-        age = st.number_input("Age", min_value=16, max_value=100)
-        gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-        bio = st.text_area("Bio", height=100)
-        interests = st.text_input("Interests (comma separated)")
-        intention = st.selectbox("Relationship Intention", ["Friendship", "Relationship", "Hookups", "Not sure yet"])
-        photo_file = st.file_uploader("Upload Profile Photo", type=["png", "jpg", "jpeg"])
+        st.caption("Didn't receive OTP? Check spam folder or resend.")
+        return
 
-        submitted = st.form_submit_button("Save Profile")
-        if submitted:
-            photo_bytes = photo_file.read() if photo_file else b""
-            with get_db_connection() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (st.session_state.current_user, name, age, gender, bio, interests, photo_bytes, datetime.now(), intention)
-                )
-                conn.commit()
-            st.success("Profile created successfully")
-            st.session_state.view = "discover"
+    # Password Reset Screen
+    if st.session_state.resetting_password:
+        st.subheader("Create New Password")
+
+        with st.form("reset_password_form"):
+            new_password = st.text_input("New Password (min 8 characters)", type="password")
+            confirm_password = st.text_input("Confirm Password", type="password")
+
+            if st.form_submit_button("Reset Password"):
+                if len(new_password) < 8:
+                    st.error("Password must be at least 8 characters")
+                elif new_password != confirm_password:
+                    st.error("Passwords do not match")
+                else:
+                    # Add pepper to password
+                    peppered_password = new_password + PEPPER_SECRET
+                    salt = bcrypt.gensalt()
+                    hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
+
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            "UPDATE users SET password=?, salt=? WHERE email=?",
+                            (hashed_pw, salt, st.session_state.temp_email)
+                        )
+                        conn.execute(
+                            "DELETE FROM password_resets WHERE email=?",
+                            (st.session_state.temp_email,)
+                        )
+                        conn.commit()
+
+                    st.success("Password updated successfully! Please login with your new password.")
+                    st.session_state.resetting_password = False
+                    time.sleep(2)
+                    st.rerun()
+
+        if st.button("Cancel"):
+            st.session_state.resetting_password = False
             st.rerun()
 
-# -----------------------------
-# Edit Profile
-# -----------------------------
+        return
+
+    # Reset OTP Verification Screen
+    if st.session_state.reset_otp_verification:
+        email = st.session_state.temp_reset_email
+        st.subheader(f"Reset Password for {email}")
+        
+        user_otp = st.text_input("Enter 6-digit OTP sent to your email", max_chars=6, key="reset_otp_input")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Verify OTP", type="primary", key="verify_reset_otp"):
+                if verify_reset_otp(email, user_otp):
+                    st.session_state.reset_otp_verification = False
+                    st.session_state.resetting_password = True
+                    st.session_state.temp_email = email
+                    st.rerun()
+                else:
+                    st.session_state.reset_otp_attempts += 1
+                    if st.session_state.reset_otp_attempts >= 3:
+                        st.error("Too many failed attempts. Please start over.")
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                            conn.commit()
+                        st.session_state.reset_otp_verification = False
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("Invalid OTP. Please try again.")
+
+        with col2:
+            if st.button("Resend OTP", key="resend_reset_otp"):
+                new_otp = generate_otp()
+                expiry = datetime.now() + timedelta(minutes=10)
+
+                with get_db_connection() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                        (email, new_otp, expiry)
+                    )
+                    conn.commit()
+
+                if send_reset_otp_email(email, new_otp):
+                    st.success("New OTP sent!")
+                else:
+                    st.error("Failed to resend OTP")
+
+        with col3:
+            if st.button("Cancel", key="cancel_reset_otp"):
+                with get_db_connection() as conn:
+                    conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                    conn.commit()
+                st.session_state.reset_otp_verification = False
+                st.info("Password reset cancelled")
+                time.sleep(1)
+                st.rerun()
+
+        st.caption("Didn't receive OTP? Check spam folder or resend.")
+        return
+
+    # Normal auth tabs
+    login_tab, register_tab = st.tabs(["Login", "Register"])
+
+    with login_tab:
+        with st.form("login_form"):
+            # CSRF protection
+            st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+            st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+            
+            email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
+            password = st.text_input("Password", type="password")
+            remember_me = st.checkbox("Remember me")
+
+            if st.form_submit_button("Login"):
+                # CSRF validation
+                if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                    log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
+                    st.error("Security error. Please try again.")
+                    return
+                
+                # Rate limiting
+                ip = st.experimental_user.get("ip", "unknown")
+                now = time.time()
+                
+                if ip not in st.session_state.login_attempts:
+                    st.session_state.login_attempts[ip] = {"count": 0, "last_attempt": 0}
+                
+                attempts = st.session_state.login_attempts[ip]
+                
+                # Reset counter if last attempt was > 15 min ago
+                if now - attempts["last_attempt"] > 900:
+                    attempts["count"] = 0
+                
+                if attempts["count"] >= 5:
+                    st.error("Too many login attempts. Please try again later.")
+                    log_security_event("RATE_LIMIT", f"Blocked IP {ip} for too many attempts")
+                    return
+                    
+                if not is_valid_student_email(email):
+                    st.error("Invalid student email format. Must start with 3 numbers")
+                else:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT password, salt, verified, banned FROM users WHERE email=?", (email,))
+                        result = c.fetchone()
+
+                    if result:
+                        hashed_pw, salt, verified, banned = result
+
+                        # Check if banned
+                        if banned:
+                            st.error("This account has been banned")
+                            log_security_event("BANNED_ATTEMPT", f"Banned user tried to login: {email}")
+                            return
+                            
+                        # Add security delay to prevent timing attacks
+                        time.sleep(random.uniform(0.1, 0.3))
+                        
+                        # Add pepper to password
+                        peppered_password = password + PEPPER_SECRET
+                        
+                        try:
+                            if bcrypt.hashpw(peppered_password.encode(), salt) == hashed_pw:
+                                if not verified:
+                                    st.error("Account not verified. Please check your email.")
+                                else:
+                                    st.session_state.current_user = email
+                                    st.session_state.session_token = create_session(email)
+                                    st.query_params["session_token"] = st.session_state.session_token
+                                    
+                                    # Check if profile exists
+                                    with get_db_connection() as conn:
+                                        profile_exists = conn.execute(
+                                            "SELECT 1 FROM profiles WHERE email=?",
+                                            (email,)
+                                        ).fetchone()
+
+                                    st.session_state.view = "profile" if not profile_exists else "discover"
+                                    st.rerun()
+                            else:
+                                st.error("Incorrect password")
+                                attempts["count"] += 1
+                                attempts["last_attempt"] = now
+                                st.session_state.login_attempts[ip] = attempts
+                                log_security_event("LOGIN_FAILURE", f"Failed login for {email}")
+                        except TypeError as e:
+                            st.error(f"Authentication error: {str(e)}")
+                    else:
+                        st.error("Email not registered")
+                        log_security_event("LOGIN_UNKNOWN", f"Attempt to login with unknown email: {email}")
+
+        # Forgot password link
+        if st.button("Forgot Password?"):
+            st.session_state.view = "forgot_password"
+            st.rerun()
+
+    with register_tab:
+        with st.form("register_form"):
+            # CSRF protection
+            st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+            st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+            
+            email = st.text_input("Student Email (must start with 3 numbers)", key="register_email")
+            password = st.text_input("Create Password (min 8 characters)", type="password")
+            confirm_password = st.text_input("Confirm Password", type="password")
+
+            if st.form_submit_button("Create Account"):
+                # CSRF validation
+                if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                    log_security_event("CSRF_FAILURE", f"Invalid CSRF token during registration")
+                    st.error("Security error. Please try again.")
+                    return
+                
+                if not is_valid_student_email(email):
+                    st.error("Invalid student email format. Must start with 3 numbers")
+                elif len(password) < 8:
+                    st.error("Password must be at least 8 characters")
+                elif password != confirm_password:
+                    st.error("Passwords do not match")
+                else:
+                    # Check if email exists
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT 1 FROM users WHERE email=?", (email,))
+                        if c.fetchone():
+                            st.error("Email already registered")
+                        else:
+                            # Generate OTP
+                            otp = generate_otp()
+                            expiry = datetime.now() + timedelta(minutes=10)
+
+                            # Store temporary user record with OTP
+                            c.execute(
+                                "INSERT INTO users (email, verified, otp, otp_expiry) VALUES (?, ?, ?, ?)",
+                                (email, 0, otp, expiry)
+                            )
+                            conn.commit()
+
+                            if send_otp_email(email, otp):
+                                st.session_state.pending_verification = True
+                                st.session_state.temp_email = email
+                                st.session_state.temp_password = password
+                                st.session_state.otp_attempts = 0
+                                st.rerun()
+                            else:
+                                # Rollback if email fails
+                                conn.rollback()
+                                st.error("Failed to send OTP. Try again.")
+
+# Forgot password flow
+def forgot_password():
+    st.title("Reset Your Password")
+
+    with st.form("forgot_password_form"):
+        email = st.text_input("Enter your student email address")
+
+        if st.form_submit_button("Send OTP"):
+            if not is_valid_student_email(email):
+                st.error("Invalid student email format")
+            else:
+                with get_db_connection() as conn:
+                    user_exists = conn.execute(
+                        "SELECT 1 FROM users WHERE email=?", (email,)
+                    ).fetchone()
+
+                if not user_exists:
+                    st.error("Email not registered")
+                else:
+                    # Generate and store reset OTP
+                    otp = generate_otp()
+                    expiry = datetime.now() + timedelta(minutes=10)
+
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                            (email, otp, expiry)
+                        )
+                        conn.commit()
+
+                    if send_reset_otp_email(email, otp):
+                        st.session_state.reset_otp_verification = True
+                        st.session_state.temp_reset_email = email
+                        st.session_state.reset_otp_attempts = 0
+                        st.rerun()
+                    else:
+                        st.error("Failed to send OTP. Please try again.")
+
+    if st.button("Back to Login"):
+        st.session_state.view = "auth"
+        st.rerun()
+
+# Profile Creation
+def create_profile():
+    st.title("Create Your Profile")
+    st.caption("Complete your profile to start connecting")
+
+    # Initialize form errors
+    if "form_errors" not in st.session_state:
+        st.session_state.form_errors = {
+            "name": False,
+            "bio": False,
+            "interests": False,
+            "photo": False
+        }
+
+    # Check if profile already exists
+    with get_db_connection() as conn:
+        profile_exists = conn.execute(
+            "SELECT 1 FROM profiles WHERE email=?",
+            (st.session_state.current_user,)
+        ).fetchone()
+    
+    if profile_exists:
+        st.warning("You already have a profile. Redirecting to edit page...")
+        st.session_state.view = "edit_profile"
+        time.sleep(1)
+        st.rerun()
+
+    with st.form("profile_form", clear_on_submit=True):
+        # CSRF protection
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+        st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+        
+        email = st.text_input("Student Email", value=st.session_state.current_user, disabled=True)
+        
+        # Name field with validation
+        name_label = "Full Name*"
+        if st.session_state.form_errors.get("name", False):
+            name_label = f":red[{name_label}]"
+        name = st.text_input(name_label)
+        
+        age = st.slider("Age", 18, 30)
+        gender = st.selectbox("Gender", ["Male", "Female", "Non-binary", "Prefer not to say"])
+        
+        # Bio field with validation
+        bio_label = "About Me*"
+        if st.session_state.form_errors.get("bio", False):
+            bio_label = f":red[{bio_label}]"
+        bio = st.text_area(bio_label, placeholder="Tell others about yourself...")
+        
+        # Interests field with validation
+        interests_label = "Interests*"
+        if st.session_state.form_errors.get("interests", False):
+            interests_label = f":red[{interests_label}]"
+        interests = st.multiselect(interests_label, [
+            "Sports", "Music", "Gaming", "Academics",
+            "Art", "Travel", "Food", "Movies", "Dancing"
+        ])
+
+        intention = st.radio("What are you looking for?",
+                             ["Relationship", "Friendship", "Hookups", "Not sure yet"],
+                             index=3)
+
+        # Photo uploader with validation
+        photo_label = "Profile Photo (max 10MB)*"
+        if st.session_state.form_errors.get("photo", False):
+            photo_label = f":red[{photo_label}]"
+        photo = st.file_uploader(photo_label, type=["jpg", "png", "jpeg"],
+                                 accept_multiple_files=False)
+
+        # Submit button
+        submitted = st.form_submit_button("Save Profile")
+        
+        if submitted:
+            # CSRF validation
+            if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                log_security_event("CSRF_FAILURE", f"Invalid CSRF token during profile creation")
+                st.error("Security error. Please try again.")
+                return
+            
+            # Reset form errors
+            st.session_state.form_errors = {
+                "name": False,
+                "bio": False,
+                "interests": False,
+                "photo": False
+            }
+            
+            # Validate fields
+            if not name:
+                st.session_state.form_errors["name"] = True
+            if not bio:
+                st.session_state.form_errors["bio"] = True
+            if not interests:
+                st.session_state.form_errors["interests"] = True
+            if not photo:
+                st.session_state.form_errors["photo"] = True
+                
+            # Check if any errors exist
+            if any(st.session_state.form_errors.values()):
+                st.error("Please fill in all required fields marked in red")
+                st.rerun()
+                
+            try:
+                # Read and verify photo (10MB limit)
+                photo_data = photo.read()
+                if len(photo_data) > 10 * 1024 * 1024:
+                    st.error("Photo exceeds 10MB size limit")
+                    return
+
+                with get_db_connection() as conn:
+                    # Check if profile exists again to prevent race condition
+                    exists = conn.execute(
+                        "SELECT 1 FROM profiles WHERE email=?",
+                        (st.session_state.current_user,)
+                    ).fetchone()
+                    
+                    if exists:
+                        st.warning("Profile already exists. Redirecting to edit page...")
+                        st.session_state.view = "edit_profile"
+                        time.sleep(1)
+                        st.rerun()
+                    
+                    conn.execute('''INSERT INTO profiles
+                                        (email, name, age, gender, bio, interests, photo, timestamp, intention)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                 (st.session_state.current_user, 
+                                  sanitize_input(name), 
+                                  age, 
+                                  sanitize_input(gender), 
+                                  sanitize_input(bio),
+                                  sanitize_input(", ".join(interests)), 
+                                  photo_data, 
+                                  datetime.now(), 
+                                  sanitize_input(intention)))
+                    conn.commit()
+
+                st.success("Profile created successfully!")
+                st.session_state.view = "discover"
+                time.sleep(1)
+                st.rerun()
+            except sqlite3.IntegrityError:
+                st.error("Profile already exists for this email. Redirecting to edit page...")
+                st.session_state.view = "edit_profile"
+                time.sleep(2)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error creating profile: {str(e)}")
+
+# Profile Editing
 def edit_profile():
-    st.title("Edit Profile")
     with get_db_connection() as conn:
         profile = conn.execute(
             "SELECT * FROM profiles WHERE email=?",
             (st.session_state.current_user,)
         ).fetchone()
+
     if not profile:
-        st.error("Profile not found")
+        st.warning("No profile found. Redirecting to create profile...")
         st.session_state.view = "profile"
+        time.sleep(1)
         st.rerun()
 
-    with st.form("edit_profile_form"):
-        name = st.text_input("Name", value=profile["name"])
-        age = st.number_input("Age", min_value=16, max_value=100, value=profile["age"])
-        gender = st.selectbox("Gender", ["Male", "Female", "Other"], index=["Male","Female","Other"].index(profile["gender"]))
-        bio = st.text_area("Bio", height=100, value=profile["bio"])
-        interests = st.text_input("Interests (comma separated)", value=profile["interests"])
-        intention = st.selectbox("Relationship Intention", ["Friendship", "Relationship", "Hookups", "Not sure yet"], index=["Friendship","Relationship","Hookups","Not sure yet"].index(profile["intention"]))
-        photo_file = st.file_uploader("Upload New Profile Photo", type=["png", "jpg", "jpeg"])
+    st.title("Edit Your Profile")
+    st.caption("Update your information")
 
-        submitted = st.form_submit_button("Update Profile")
-        if submitted:
-            photo_bytes = photo_file.read() if photo_file else profile["photo"]
-            with get_db_connection() as conn:
-                conn.execute(
-                    "UPDATE profiles SET name=?, age=?, gender=?, bio=?, interests=?, photo=?, intention=? WHERE email=?",
-                    (name, age, gender, bio, interests, photo_bytes, intention, st.session_state.current_user)
-                )
-                conn.commit()
-            st.success("Profile updated successfully")
+    with st.form("edit_profile_form"):
+        # CSRF protection
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+        st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+        
+        name = st.text_input("Full Name", value=profile["name"])
+        age = st.slider("Age", 18, 30, value=profile["age"])
+        gender = st.selectbox("Gender",
+                              ["Male", "Female", "Non-binary", "Prefer not to say"],
+                              index=["Male", "Female", "Non-binary", "Prefer not to say"].index(profile["gender"]))
+        bio = st.text_area("About Me", value=profile["bio"])
+        current_interests = profile["interests"].split(", ") if profile["interests"] else []
+        interests = st.multiselect("Interests", [
+            "Sports", "Music", "Gaming", "Academics",
+            "Art", "Travel", "Food", "Movies", "Dancing"
+        ], default=current_interests)
+
+        # Show current photo if exists
+        if profile["photo"]:
+            try:
+                st.image(Image.open(io.BytesIO(profile["photo"])), width=150, caption="Current Photo")
+            except:
+                st.image("default_profile.png", width=150, caption="Current Photo")
+
+        photo = st.file_uploader("Update Profile Photo (max 10MB, leave empty to keep current)",
+                                 type=["jpg", "png", "jpeg"],
+                                 accept_multiple_files=False)
+
+        # Intention field
+        intentions = ["Relationship", "Friendship", "Hookups", "Not sure yet"]
+        current_intention = profile["intention"] if "intention" in profile else "Not sure yet"
+        intention = st.radio("What are you looking for?",
+                             intentions,
+                             index=intentions.index(current_intention))
+
+        col1, col2 = st.columns(2)
+        with col1:
+            submit = st.form_submit_button("Update Profile")
+        with col2:
+            cancel = st.form_submit_button("Cancel")
+
+        if cancel:
             st.session_state.view = "discover"
             st.rerun()
 
-# -----------------------------
-# Discover Profiles
-# -----------------------------
-def discover_profiles():
-    st.title("Discover People")
-    current_user = st.session_state.current_user
+        if submit:
+            # CSRF validation
+            if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                log_security_event("CSRF_FAILURE", f"Invalid CSRF token during profile update")
+                st.error("Security error. Please try again.")
+                return
+                
+            try:
+                # Use new photo if provided, otherwise keep existing
+                photo_data = profile["photo"]
+                if photo:
+                    if photo.size > 10 * 1024 * 1024:  # 10MB limit
+                        st.error("Photo size must be less than 10MB")
+                        return
+                    else:
+                        photo_data = photo.read()
 
+                with get_db_connection() as conn:
+                    conn.execute('''UPDATE profiles
+                                    SET name=?,
+                                        age=?,
+                                        gender=?,
+                                        bio=?,
+                                        interests=?,
+                                        photo=?,
+                                        intention=?
+                                    WHERE email = ?''',
+                                 (sanitize_input(name), 
+                                  age, 
+                                  sanitize_input(gender), 
+                                  sanitize_input(bio), 
+                                  sanitize_input(", ".join(interests)),
+                                  photo_data, 
+                                  sanitize_input(intention), 
+                                  st.session_state.current_user))
+                    conn.commit()
+
+                st.success("Profile updated successfully!")
+                st.session_state.view = "discover"
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error updating profile: {str(e)}")
+
+# Record like action
+def record_like(from_email, to_email):
     with get_db_connection() as conn:
-        profiles = conn.execute(
-            '''SELECT email, name, age, gender, bio, interests, photo, intention
-               FROM profiles
-               WHERE email != ?
-               ORDER BY timestamp DESC''',
-            (current_user,)
-        ).fetchall()
+        conn.execute(
+            '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
+               VALUES (?, ?, ?, ?, ?)''',
+            (str(uuid4()), from_email, to_email, "liked", datetime.now())
+        )
+        conn.commit()
 
-    if not profiles:
-        st.info("No profiles found")
+# Record connection request
+def record_connection_request(from_email, to_email):
+    with get_db_connection() as conn:
+        conn.execute(
+            '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
+               VALUES (?, ?, ?, ?, ?)''',
+            (str(uuid4()), from_email, to_email, "requested", datetime.now())
+        )
+        conn.commit()
+
+# Discover Profiles
+def discover_profiles():
+    st.title("Discover People 🥰😍")
+    current_user = st.session_state.current_user
+    
+    # Use cached profiles if available and recent (within 5 minutes)
+    if st.session_state.profiles_cache and st.session_state.cache_timestamp:
+        if (datetime.now() - st.session_state.cache_timestamp).total_seconds() < 300:
+            available_profiles = st.session_state.profiles_cache
+        else:
+            st.session_state.profiles_cache = None
+            st.session_state.cache_timestamp = None
+            available_profiles = get_profiles(current_user)
+    else:
+        available_profiles = get_profiles(current_user)
+        st.session_state.profiles_cache = available_profiles
+        st.session_state.cache_timestamp = datetime.now()
+
+    if not available_profiles:
+        st.info("No profiles to show. Try again later.")
         return
 
-    for profile in profiles:
-        email = profile["email"]
-        name = profile["name"]
-        age = profile["age"]
-        gender = profile["gender"]
-        bio = profile["bio"]
-        interests = profile["interests"]
-        photo = profile["photo"]
-        intention = profile["intention"]
+    # Get current profile to show
+    st.session_state.current_index = st.session_state.get('current_index', 0)
+    if st.session_state.current_index >= len(available_profiles):
+        st.session_state.current_index = 0
 
-        col1, col2 = st.columns([1, 4])
+    # Unpack profile data
+    profile = available_profiles[st.session_state.current_index]
+    email = profile["email"]
+    name = profile["name"]
+    age = profile["age"]
+    gender = profile["gender"]
+    bio = profile["bio"]
+    interests = profile["interests"]
+    photo = profile["photo"]
+    intention = profile["intention"] if "intention" in profile else "Not sure yet"
+
+    # Display the profile with swipeable interface
+    with st.container():
+        # Create swipeable card
+        col1, col2 = st.columns([1, 3])
         with col1:
-            if photo:
-                try:
-                    st.image(Image.open(io.BytesIO(photo)), width=80)
-                except:
-                    st.image("default_profile.png", width=80)
-            else:
-                st.image("default_profile.png", width=80)
+            st.write("")  # Spacer
+            
         with col2:
-            st.write(f"**{name}, {age} ({gender})**")
-            st.caption(f"{bio[:100]}..." if bio else "")
-            st.caption(f"Interests: {interests}")
-            st.caption(f"Looking for: {intention}")
-
-            col_connect, col_report = st.columns([1, 1])
-            with col_connect:
-                if st.button("Connect", key=f"connect_{email}"):
-                    with get_db_connection() as conn:
+            # Swipe instructions
+            st.markdown("""
+                <div style="text-align:center; margin-bottom:20px;">
+                    <p>Swipe ← to pass, swipe → to like</p>
+                    <p>Or use buttons below</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Profile card
+            with st.container():
+                card = st.empty()
+                with card.container():
+                    # Display photo
+                    if photo:
                         try:
-                            conn.execute(
-                                '''INSERT INTO connections (from_email, to_email, status, timestamp)
-                                   VALUES (?, ?, 'requested', ?)''',
-                                (current_user, email, datetime.now())
-                            )
-                            conn.commit()
-                            st.success(f"Connection request sent to {name}")
-                        except sqlite3.IntegrityError:
-                            st.warning("Connection request already sent")
-                        st.rerun()
-            with col_report:
-                if st.button("Report", key=f"report_{email}"):
-                    st.session_state.reporting_user = email
-                    st.session_state.reporting_name = name
-                    st.session_state.view = "report_user"
+                            st.image(Image.open(io.BytesIO(photo)), width=250, caption=f"{name}, {age}")
+                        except:
+                            st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                    else:
+                        st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                    
+                    # Profile info
+                    st.caption(f"{gender} • Looking for: {intention}")
+                    st.write(bio)
+                    st.write(f"**Interests:** {interests}")
+            
+            # Swipe action indicator
+            if st.session_state.swipe_action:
+                if st.session_state.swipe_action == "like":
+                    st.success(f"Liked {name}!")
+                elif st.session_state.swipe_action == "pass":
+                    st.info(f"Passed on {name}")
+                st.session_state.swipe_action = None
+            
+            # Action buttons
+            col_pass, col_connect, col_like = st.columns([1, 1, 1])
+            with col_pass:
+                if st.button("👎 Pass", key="pass", use_container_width=True):
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
                     st.rerun()
-        st.divider()
+            with col_connect:
+                if st.button("🤝 Connect", key="connect", type="primary", use_container_width=True):
+                    record_connection_request(st.session_state.current_user, email)
+                    st.success(f"Connection request sent to {name}!")
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
+                    st.rerun()
+            with col_like:
+                if st.button("❤️ Like", key="like", use_container_width=True):
+                    record_like(st.session_state.current_user, email)
+                    st.success(f"Liked {name}!")
+                    st.session_state.current_index = (st.session_state.current_index + 1) % len(available_profiles)
+                    st.rerun()
 
+# Get profiles with optimized query
+def get_profiles(current_user):
+    with get_db_connection() as conn:
+        try:
+            # Pre-fetch blocked users
+            blocked_users = conn.execute(
+                "SELECT blocked_email FROM blocked_users WHERE blocker_email=?",
+                (current_user,)
+            ).fetchall()
+            blocked_emails = [row["blocked_email"] for row in blocked_users]
 
-# -----------------------------
+            # Get profiles excluding current user and blocked users
+            profiles = []
+            for row in conn.execute(
+                    '''SELECT email, name, age, gender, bio, interests, photo, intention
+                       FROM profiles
+                       WHERE email != ?''',
+                    (current_user,)
+            ).fetchall():
+                if row["email"] not in blocked_emails:
+                    profiles.append(dict(row))
+                    
+            return profiles
+        except sqlite3.Error as e:
+            st.error(f"Database error: {e}")
+            return []
+
 # Connections Management
-# -----------------------------
 def view_connections():
     current_user = st.session_state.current_user
 
@@ -399,6 +1239,7 @@ def view_connections():
             with col2:
                 st.write(f"**{name}** wants to connect with you")
                 
+                # Convert string to datetime object if needed
                 if isinstance(timestamp, str):
                     try:
                         timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
@@ -421,6 +1262,7 @@ def view_connections():
                                 (req_id,)
                             )
                             conn.commit()
+                        # Add notification
                         notification = {
                             "type": "connection_accepted",
                             "from_user": current_user,
@@ -493,6 +1335,7 @@ def view_connections():
 
             with col2:
                 st.write(f"**{name}**")
+                # FIXED TIMESTAMP HANDLING
                 if isinstance(timestamp, str):
                     try:
                         timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
@@ -511,6 +1354,7 @@ def view_connections():
                     st.session_state.view = "chat"
                     st.rerun()
 
+                # Video call button
                 if st.button("📞 Video Call", key=f"call_{conn_id}"):
                     st.session_state.caller = st.session_state.current_user
                     st.session_state.callee = other_email
@@ -518,12 +1362,14 @@ def view_connections():
                     st.session_state.view = "video_call"
                     st.rerun()
 
+                # Report button for connections
                 if st.button("⚠️ Report", key=f"report_{conn_id}"):
                     st.session_state.reporting_user = other_email
                     st.session_state.reporting_name = name
                     st.session_state.view = "report_user"
                     st.rerun()
 
+                # Block button for connections
                 if st.button("🚫 Block", key=f"block_{conn_id}"):
                     with get_db_connection() as conn:
                         conn.execute(
@@ -541,10 +1387,7 @@ def view_connections():
                     st.rerun()
             st.divider()
 
-
-# -----------------------------
 # Chat Interface
-# -----------------------------
 def chat_interface():
     current_user = st.session_state.current_user
     other_user = st.session_state.current_chat
@@ -563,6 +1406,7 @@ def chat_interface():
     other_name = other_profile["name"]
     other_photo = other_profile["photo"]
 
+    # Chat header
     col1, col2, col3 = st.columns([1, 8, 1])
     with col1:
         if st.button("← Back"):
@@ -578,8 +1422,10 @@ def chat_interface():
             st.session_state.view = "video_call"
             st.rerun()
 
+    # Generate chat ID
     chat_id = "_".join(sorted([current_user, other_user]))
 
+    # Get messages
     with get_db_connection() as conn:
         messages = conn.execute(
             '''SELECT id, sender, receiver, message, time, read
@@ -589,6 +1435,7 @@ def chat_interface():
             (chat_id,)
         ).fetchall()
 
+        # Mark received messages as read
         conn.execute(
             '''UPDATE messages
                SET read=1
@@ -599,24 +1446,55 @@ def chat_interface():
         )
         conn.commit()
 
+    # Chat container styling
     st.markdown(
         """
         <style>
-        .chat-container { height: 400px; overflow-y: auto; padding: 10px; background-color: #1a1d24; border-radius: 10px; margin-bottom: 20px;}
-        .sender { background-color: #4a4e69; padding: 10px; border-radius: 15px; margin-bottom: 10px; margin-left: 30%; text-align: right;}
-        .receiver { background-color: #2d3039; padding: 10px; border-radius: 15px; margin-bottom: 10px; margin-right: 30%; }
-        .timestamp { font-size: 0.7em; color: #aaa; }
+        .chat-container {
+            height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #1a1d24;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .sender {
+            background-color: #4a4e69;
+            padding: 10px;
+            border-radius: 15px;
+            margin-bottom: 10px;
+            margin-left: 30%;
+            text-align: right;
+        }
+        .receiver {
+            background-color: #2d3039;
+            padding: 10px;
+            border-radius: 15px;
+            margin-bottom: 10px;
+            margin-right: 30%;
+        }
+        .timestamp {
+            font-size: 0.7em;
+            color: #aaa;
+        }
         </style>
-        """, unsafe_allow_html=True
+        """, 
+        unsafe_allow_html=True
     )
-
+    
+    # Display chat messages
     with st.container():
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+        
         for msg in messages:
             msg_id = msg["id"]
             sender = msg["sender"]
+            receiver = msg["receiver"]
             message = msg["message"]
             msg_time = msg["time"]
+            read = msg["read"]
+            
+            # Convert timestamp if needed
             if isinstance(msg_time, str):
                 try:
                     if '.' in msg_time:
@@ -625,30 +1503,41 @@ def chat_interface():
                         msg_time = datetime.strptime(msg_time, "%Y-%m-%d %H:%M:%S")
                 except:
                     msg_time = datetime.now()
+            
+            # Format the time as HH:MM
             timestamp = msg_time.strftime("%H:%M")
-
+            
             if sender == current_user:
-                st.markdown(f'<div class="sender">{message}<div class="timestamp">{timestamp}</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="sender">{message}<div class="timestamp">{timestamp}</div></div>', 
+                    unsafe_allow_html=True
+                )
             else:
-                st.markdown(f'<div class="receiver">{message}<div class="timestamp">{timestamp}</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="receiver">{message}<div class="timestamp">{timestamp}</div></div>', 
+                    unsafe_allow_html=True
+                )
+        
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # Message input
     if prompt := st.chat_input("Type a message..."):
+        # Add message to database
         with get_db_connection() as conn:
             conn.execute(
-                '''INSERT INTO messages (id, chat_id, sender, receiver, message, time, read)
+                '''INSERT INTO messages
+                       (id, chat_id, sender, receiver, message, time, read)
                    VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (str(uuid4()), chat_id, current_user, other_user, prompt, datetime.now(), 0)
+                (str(uuid4()), chat_id, current_user, other_user,
+                 prompt, datetime.now(), 0)
             )
             conn.commit()
         st.rerun()
 
-
-# -----------------------------
 # Video Call Interface
-# -----------------------------
 def video_call_interface():
     st.title("Video Call 📞")
+    
     if st.session_state.call_state == "ringing":
         if st.session_state.current_user == st.session_state.callee:
             st.info(f"{st.session_state.caller} is calling you...")
@@ -668,16 +1557,24 @@ def video_call_interface():
                 st.session_state.call_state = "ended"
                 st.session_state.view = "connections"
                 st.rerun()
+    
     elif st.session_state.call_state == "active":
         st.info("Call in progress...")
+        
+        # Video call component
         webrtc_ctx = webrtc_streamer(
             key="video-chat",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            media_stream_constraints={"video": True, "audio": True},
+            media_stream_constraints={
+                "video": True,
+                "audio": True
+            },
             video_frame_callback=None,
             async_processing=True,
         )
+        
+        # End call button
         if st.button("End Call", type="primary"):
             st.session_state.call_state = "ended"
             if "current_chat" in st.session_state:
@@ -685,6 +1582,7 @@ def video_call_interface():
             else:
                 st.session_state.view = "connections"
             st.rerun()
+    
     elif st.session_state.call_state == "ended":
         st.info("Call ended")
         if "current_chat" in st.session_state:
@@ -693,9 +1591,7 @@ def video_call_interface():
             st.session_state.view = "connections"
         st.rerun()
 
-# -----------------------------
 # Report User Interface
-# -----------------------------
 def report_user():
     st.title("Report User")
     st.subheader(f"Reporting: {st.session_state.reporting_name}")
@@ -745,10 +1641,7 @@ def report_user():
             st.session_state.view = "discover" if "current_chat" not in st.session_state else "connections"
             st.rerun()
 
-
-# -----------------------------
 # Account Deletion
-# -----------------------------
 def delete_account():
     st.title("Delete Account")
     st.warning("This action is permanent and cannot be undone!")
@@ -796,10 +1689,7 @@ def delete_account():
                 else:
                     st.error("User not found")
 
-
-# -----------------------------
-# Notification System
-# -----------------------------
+# Notification system
 def show_notifications():
     if not st.session_state.notifications:
         st.info("No new notifications")
@@ -818,10 +1708,7 @@ def show_notifications():
             st.caption(notification["timestamp"].strftime("%b %d, %Y at %H:%M"))
             st.divider()
 
-
-# -----------------------------
 # Admin Panel
-# -----------------------------
 def admin_panel():
     if "current_user" not in st.session_state:
         st.error("You must be logged in")
@@ -942,9 +1829,7 @@ def admin_panel():
                             conn.commit()
                         st.rerun()
 
-# -----------------------------
 # Security Dashboard
-# -----------------------------
 def security_dashboard():
     if "current_user" not in st.session_state:
         st.error("You must be logged in")
@@ -997,10 +1882,7 @@ def security_dashboard():
             banned_count = conn.execute("SELECT COUNT(*) FROM users WHERE banned=1").fetchone()[0]
         st.metric("Banned Users", banned_count)
 
-
-# -----------------------------
 # Main App
-# -----------------------------
 def main():
     # Set session lifetime to 1 day (prevents logout when screen off)
     st.session_state.setdefault('server.maxSessionAge', 86400)
@@ -1193,63 +2075,18 @@ def main():
         view_connections()
     elif st.session_state.view == "chat":
         chat_interface()
-    elif st.session_state.view == "notifications":
-        show_notifications()
+    elif st.session_state.view == "video_call":
+        video_call_interface()
     elif st.session_state.view == "report_user":
         report_user()
     elif st.session_state.view == "delete_account":
         delete_account()
-    elif st.session_state.view == "video_call":
-        video_call_interface()
+    elif st.session_state.view == "notifications":
+        show_notifications()
     elif st.session_state.view == "admin":
         admin_panel()
     elif st.session_state.view == "security_dashboard":
         security_dashboard()
-    elif st.session_state.reset_otp_verification:
-        auth_system()
-
-    # Add sample data if database is empty
-    with get_db_connection() as conn:
-        # Insert sample data if empty
-        if not conn.execute("SELECT 1 FROM profiles").fetchone():
-            # Sample profiles
-            sample_profiles = [
-                ("123user1@example.com", "Amanda K", 21, "Female",
-                 "Psychology major who loves hiking and indie music",
-                 "Music, Travel, Art", b"", datetime.now(), "Relationship"),
-                ("234user2@example.com", "James L", 22, "Male",
-                 "Computer Science student and football enthusiast",
-                 "Sports, Gaming, Movies", b"", datetime.now(), "Friendship"),
-                ("345user3@example.com", "Priya M", 20, "Female",
-                 "Art student passionate about street photography",
-                 "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet"),
-                ("456user4@example.com", "Thomas O", 23, "Male",
-                 "Engineering student who plays guitar and loves jazz",
-                 "Music, Technology, Science", b"", datetime.now(), "Hookups"),
-                ("567user5@example.com", "Naledi P", 19, "Female",
-                 "Environmental science major and vegan foodie",
-                 "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship")
-            ]
-
-            # Create sample users
-            for profile in sample_profiles:
-                email = profile[0]
-                salt = bcrypt.gensalt()
-                password = "Password123"
-                peppered_password = password + PEPPER_SECRET
-                hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
-
-                conn.execute("INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
-                             (email, hashed_pw, salt, 1))
-                # Only insert profile if it doesn't exist
-                exists = conn.execute("SELECT 1 FROM profiles WHERE email=?", (email,)).fetchone()
-                if not exists:
-                    conn.execute(
-                        "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        profile)
-
-            conn.commit()
-
 
 if __name__ == "__main__":
     main()
