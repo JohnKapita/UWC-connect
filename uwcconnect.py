@@ -239,6 +239,8 @@ def init_session_state():
         st.session_state.login_attempts = {}
     if "session_token" not in st.session_state:
         st.session_state.session_token = None
+    if "unread_messages" not in st.session_state:
+        st.session_state.unread_messages = 0
 
 # Security functions
 def encrypt_data(data):
@@ -1266,6 +1268,10 @@ def view_connections():
                             "timestamp": datetime.now()
                         }
                         st.session_state.notifications.append(notification)
+                        
+                        # Automatically add to messages list
+                        st.session_state.current_chat = from_email
+                        st.session_state.view = "chat"
                         st.rerun()
                 with col_reject:
                     if st.button("Reject", key=f"reject_{req_id}"):
@@ -1406,7 +1412,7 @@ def chat_interface():
     col1, col2, col3 = st.columns([1, 8, 1])
     with col1:
         if st.button("← Back"):
-            st.session_state.view = "connections"
+            st.session_state.view = "messages_inbox"
             st.rerun()
     with col2:
         st.title(f"Chat with {other_name}")
@@ -1530,6 +1536,122 @@ def chat_interface():
             conn.commit()
         st.rerun()
 
+# Messages Inbox
+def messages_inbox():
+    current_user = st.session_state.current_user
+    st.title("Your Messages")
+    st.caption("Connect with your matches")
+
+    # Get all connected users with message history
+    with get_db_connection() as conn:
+        # Get all connected users
+        connected_users = conn.execute(
+            '''SELECT 
+                CASE 
+                    WHEN c.from_email = ? THEN c.to_email 
+                    ELSE c.from_email 
+                END AS other_email
+            FROM connections c
+            WHERE (c.from_email = ? OR c.to_email = ?)
+                AND c.status = 'connected'
+            ORDER BY c.timestamp DESC''',
+            (current_user, current_user, current_user)
+        ).fetchall()
+
+    if not connected_users:
+        st.info("No conversations yet. Connect with people to start messaging.")
+        return
+
+    # Search bar
+    search_query = st.text_input("Search conversations", key="search_messages")
+
+    # Display conversations
+    for user in connected_users:
+        other_email = user["other_email"]
+        
+        # Get user profile
+        with get_db_connection() as conn:
+            profile = conn.execute(
+                "SELECT name, photo FROM profiles WHERE email=?",
+                (other_email,)
+            ).fetchone()
+        
+        if not profile:
+            continue
+            
+        name = profile["name"]
+        photo = profile["photo"]
+        
+        # Apply search filter
+        if search_query and search_query.lower() not in name.lower():
+            continue
+            
+        # Get last message
+        chat_id = "_".join(sorted([current_user, other_email]))
+        with get_db_connection() as conn:
+            last_message = conn.execute(
+                '''SELECT message, time, sender, receiver
+                FROM messages
+                WHERE chat_id=?
+                ORDER BY time DESC
+                LIMIT 1''',
+                (chat_id,)
+            ).fetchone()
+            
+        # Get unread count
+        with get_db_connection() as conn:
+            unread_count = conn.execute(
+                '''SELECT COUNT(*) 
+                FROM messages 
+                WHERE chat_id=? 
+                    AND receiver = ? 
+                    AND read = 0''',
+                (chat_id, current_user)
+            ).fetchone()[0]
+            
+        # Format last message preview
+        preview = "No messages yet"
+        timestamp = ""
+        if last_message:
+            preview = last_message["message"][:50] + "..." if len(last_message["message"]) > 50 else last_message["message"]
+            timestamp = last_message["time"]
+            if isinstance(timestamp, str):
+                try:
+                    if '.' in timestamp:
+                        timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                except:
+                    timestamp = datetime.now()
+            timestamp = timestamp.strftime("%b %d, %H:%M")
+            
+        # Display conversation card
+        with st.container():
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if photo:
+                    try:
+                        st.image(Image.open(io.BytesIO(photo)), width=60)
+                    except:
+                        st.image("default_profile.png", width=60)
+                else:
+                    st.image("default_profile.png", width=60)
+                    
+            with col2:
+                st.subheader(name)
+                if unread_count > 0:
+                    st.markdown(f"<span style='color:#ff4b4b; font-weight:bold;'>{unread_count} unread</span>", unsafe_allow_html=True)
+                st.caption(preview)
+                st.caption(timestamp)
+                
+            # Click to open chat
+            if st.button("Open Chat", key=f"open_{other_email}"):
+                st.session_state.current_chat = other_email
+                st.session_state.view = "chat"
+                st.rerun()
+                
+            st.divider()
+
 # Video Call Interface
 def video_call_interface():
     st.title("Video Call 📞")
@@ -1545,13 +1667,13 @@ def video_call_interface():
             with col2:
                 if st.button("Decline"):
                     st.session_state.call_state = "ended"
-                    st.session_state.view = "connections"
+                    st.session_state.view = "messages_inbox"
                     st.rerun()
         else:
             st.info(f"Calling {st.session_state.callee}...")
             if st.button("Cancel Call"):
                 st.session_state.call_state = "ended"
-                st.session_state.view = "connections"
+                st.session_state.view = "messages_inbox"
                 st.rerun()
 
     elif st.session_state.call_state == "active":
@@ -1573,18 +1695,12 @@ def video_call_interface():
         # End call button
         if st.button("End Call", type="primary"):
             st.session_state.call_state = "ended"
-            if "current_chat" in st.session_state:
-                st.session_state.view = "chat"
-            else:
-                st.session_state.view = "connections"
+            st.session_state.view = "messages_inbox"
             st.rerun()
 
     elif st.session_state.call_state == "ended":
         st.info("Call ended")
-        if "current_chat" in st.session_state:
-            st.session_state.view = "chat"
-        else:
-            st.session_state.view = "connections"
+        st.session_state.view = "messages_inbox"
         st.rerun()
 
 # Report User Interface
@@ -1948,6 +2064,45 @@ def main():
     .stTextInput>div>div>input {
         border-color: #dc3545 !important;
     }
+    
+    /* Sidebar enhancements */
+    .sidebar-header {
+        text-align: center;
+        padding: 15px 0;
+        border-bottom: 1px solid #2d3039;
+        margin-bottom: 20px;
+    }
+    .sidebar-item {
+        padding: 12px 20px;
+        margin: 8px 0;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: all 0.3s;
+        display: flex;
+        align-items: center;
+    }
+    .sidebar-item:hover {
+        background-color: #2d3039;
+    }
+    .sidebar-item.active {
+        background-color: #4a4e69;
+    }
+    .sidebar-icon {
+        margin-right: 10px;
+        font-size: 1.2em;
+    }
+    .unread-badge {
+        background-color: #ff4b4b;
+        color: white;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8em;
+        margin-left: auto;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1986,9 +2141,11 @@ def main():
     # Navigation sidebar
     if st.session_state.current_user:
         with st.sidebar:
-            st.header("Campus Connect")
-            st.divider()
-
+            # Enhanced sidebar header
+            st.markdown('<div class="sidebar-header">', unsafe_allow_html=True)
+            st.subheader("Campus Connect")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
             # Profile quick view
             with get_db_connection() as conn:
                 profile = conn.execute(
@@ -2001,62 +2158,66 @@ def main():
                 photo = profile["photo"]
                 if photo:
                     try:
-                        st.image(Image.open(io.BytesIO(photo)), width=80)
+                        st.image(Image.open(io.BytesIO(photo)), width=100, caption=name)
                     except:
-                        st.image("default_profile.png", width=80)
-                st.subheader(name)
+                        st.image("default_profile.png", width=100, caption=name)
+                else:
+                    st.image("default_profile.png", width=100, caption=name)
+            
+            # Calculate unread messages count
+            with get_db_connection() as conn:
+                unread_count = conn.execute(
+                    '''SELECT COUNT(*) 
+                    FROM messages 
+                    WHERE receiver = ? 
+                    AND read = 0''',
+                    (st.session_state.current_user,)
+                ).fetchone()[0]
+                st.session_state.unread_messages = unread_count
 
-            # Navigation
-            if st.button("Discover People"):
-                st.session_state.view = "discover"
-                st.rerun()
-
-            if st.button("My Connections"):
-                st.session_state.view = "connections"
-                st.rerun()
-
-            # Notification badge
-            unread_notifications = len(st.session_state.notifications)
-            if unread_notifications > 0:
-                if st.button(f"Notifications 🔴 {unread_notifications}"):
-                    st.session_state.view = "notifications"
-                    st.rerun()
-            else:
-                if st.button("Notifications"):
-                    st.session_state.view = "notifications"
-                    st.rerun()
-
-            if st.button("Edit Profile"):
-                st.session_state.view = "edit_profile"
-                st.rerun()
-
-            # Check if user is admin
+            # Enhanced navigation with icons
+            nav_items = [
+                {"label": "Discover People", "icon": "🔍", "view": "discover"},
+                {"label": "My Connections", "icon": "🤝", "view": "connections"},
+                {"label": "Messages", "icon": "💬", "view": "messages_inbox", "badge": unread_count},
+                {"label": "Notifications", "icon": "🔔", "view": "notifications"},
+                {"label": "Edit Profile", "icon": "✏️", "view": "edit_profile"},
+            ]
+            
+            # Admin items
             with get_db_connection() as conn:
                 is_admin = conn.execute(
                     "SELECT 1 FROM admins WHERE email=?",
                     (st.session_state.current_user,)
                 ).fetchone()
-
+                
             if is_admin:
-                if st.button("Admin Panel"):
-                    st.session_state.view = "admin"
-                    st.rerun()
-                if st.button("Security Dashboard"):
-                    st.session_state.view = "security_dashboard"
-                    st.rerun()
-
-            if st.button("Delete Account", type="primary"):
-                st.session_state.view = "delete_account"
-                st.rerun()
-
-            st.divider()
-            if st.button("Logout"):
-                st.session_state.clear()
-                # Clear query params
-                query_params = get_query_params()
-                query_params.clear()
-                st.session_state.view = "auth"
-                st.rerun()
+                nav_items.extend([
+                    {"label": "Admin Panel", "icon": "⚙️", "view": "admin"},
+                    {"label": "Security Dashboard", "icon": "🛡️", "view": "security_dashboard"}
+                ])
+                
+            nav_items.extend([
+                {"label": "Delete Account", "icon": "⚠️", "view": "delete_account"},
+                {"label": "Logout", "icon": "🚪", "view": "auth"}
+            ])
+            
+            # Render navigation items
+            for item in nav_items:
+                active = "active" if st.session_state.view == item["view"] else ""
+                badge = ""
+                
+                if "badge" in item and item["badge"] > 0:
+                    badge = f'<span class="unread-badge">{item["badge"]}</span>'
+                    
+                html = f'''
+                <div class="sidebar-item {active}" onclick="window.location.href='?view={item["view"]}'">
+                    <span class="sidebar-icon">{item["icon"]}</span>
+                    <span>{item["label"]}</span>
+                    {badge}
+                </div>
+                '''
+                st.markdown(html, unsafe_allow_html=True)
 
     # Main view routing
     if st.session_state.view == "auth":
@@ -2085,6 +2246,8 @@ def main():
         admin_panel()
     elif st.session_state.view == "security_dashboard":
         security_dashboard()
+    elif st.session_state.view == "messages_inbox":
+        messages_inbox()
 
 if __name__ == "__main__":
     main()
