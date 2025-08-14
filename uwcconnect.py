@@ -22,6 +22,7 @@ import hmac
 import json
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
+import binascii
 
 # Load environment variables
 load_dotenv()
@@ -40,118 +41,124 @@ RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
+# Database connection manager
+def get_db_connection():
+    conn = sqlite3.connect("campus_connect.db", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 # Initialize database with proper schema
 def init_database():
-    conn = sqlite3.connect("campus_connect.db")
-    c = conn.cursor()
+    with get_db_connection() as conn:
+        c = conn.cursor()
 
-    # Create users table
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (
-                     email TEXT PRIMARY KEY,
-                     password TEXT,
-                     salt TEXT,
-                     verified BOOLEAN DEFAULT 0,
-                     otp TEXT,
-                     otp_expiry DATETIME,
-                     last_active DATETIME,
-                     login_attempts INTEGER DEFAULT 0,
-                     last_attempt DATETIME,
-                     banned BOOLEAN DEFAULT 0
-                 )''')
+        # Create users table
+        c.execute('''CREATE TABLE IF NOT EXISTS users
+                     (
+                         email TEXT PRIMARY KEY,
+                         password TEXT,
+                         salt TEXT,
+                         verified BOOLEAN DEFAULT 0,
+                         otp TEXT,
+                         otp_expiry DATETIME,
+                         last_active DATETIME,
+                         login_attempts INTEGER DEFAULT 0,
+                         last_attempt DATETIME,
+                         banned BOOLEAN DEFAULT 0
+                     )''')
 
-    # Create profiles table
-    c.execute('''CREATE TABLE IF NOT EXISTS profiles
-                 (
-                     email TEXT PRIMARY KEY,
-                     name TEXT,
-                     age INTEGER,
-                     gender TEXT,
-                     bio TEXT,
-                     interests TEXT,
-                     photo BLOB,
-                     timestamp DATETIME,
-                     intention TEXT DEFAULT 'Not sure yet'
-                 )''')
+        # Create profiles table
+        c.execute('''CREATE TABLE IF NOT EXISTS profiles
+                     (
+                         email TEXT PRIMARY KEY,
+                         name TEXT,
+                         age INTEGER,
+                         gender TEXT,
+                         bio TEXT,
+                         interests TEXT,
+                         photo BLOB,
+                         timestamp DATETIME,
+                         intention TEXT DEFAULT 'Not sure yet'
+                     )''')
 
-    # Create connections table
-    c.execute('''CREATE TABLE IF NOT EXISTS connections
-                 (
-                     id TEXT PRIMARY KEY,
-                     from_email TEXT,
-                     to_email TEXT,
-                     status TEXT,
-                     timestamp DATETIME
-                 )''')
+        # Create connections table
+        c.execute('''CREATE TABLE IF NOT EXISTS connections
+                     (
+                         id TEXT PRIMARY KEY,
+                         from_email TEXT,
+                         to_email TEXT,
+                         status TEXT,
+                         timestamp DATETIME
+                     )''')
 
-    # Create messages table
-    c.execute('''CREATE TABLE IF NOT EXISTS messages
-                 (
-                     id TEXT PRIMARY KEY,
-                     chat_id TEXT,
-                     sender TEXT,
-                     receiver TEXT,
-                     message TEXT,
-                     time DATETIME,
-                     read BOOLEAN DEFAULT 0
-                 )''')
+        # Create messages table
+        c.execute('''CREATE TABLE IF NOT EXISTS messages
+                     (
+                         id TEXT PRIMARY KEY,
+                         chat_id TEXT,
+                         sender TEXT,
+                         receiver TEXT,
+                         message TEXT,
+                         time DATETIME,
+                         read BOOLEAN DEFAULT 0
+                     )''')
 
-    # Create reports table
-    c.execute('''CREATE TABLE IF NOT EXISTS reports
-                 (
-                     id TEXT PRIMARY KEY,
-                     reporter_email TEXT,
-                     reported_email TEXT,
-                     reason TEXT,
-                     details TEXT,
-                     timestamp DATETIME,
-                     status TEXT DEFAULT 'pending'
-                 )''')
+        # Create reports table
+        c.execute('''CREATE TABLE IF NOT EXISTS reports
+                     (
+                         id TEXT PRIMARY KEY,
+                         reporter_email TEXT,
+                         reported_email TEXT,
+                         reason TEXT,
+                         details TEXT,
+                         timestamp DATETIME,
+                         status TEXT DEFAULT 'pending'
+                     )''')
 
-    # Create password resets table
-    c.execute('''CREATE TABLE IF NOT EXISTS password_resets
-                 (
-                     email TEXT PRIMARY KEY,
-                     otp TEXT,
-                     expiry DATETIME
-                 )''')
+        # Create password resets table
+        c.execute('''CREATE TABLE IF NOT EXISTS password_resets
+                     (
+                         email TEXT PRIMARY KEY,
+                         otp TEXT,
+                         expiry DATETIME
+                     )''')
 
-    # Create blocked users table
-    c.execute('''CREATE TABLE IF NOT EXISTS blocked_users
-                 (
-                     blocker_email TEXT,
-                     blocked_email TEXT,
-                     timestamp DATETIME,
-                     PRIMARY KEY (blocker_email, blocked_email)
-                 )''')
-    
-    # Create admins table
-    c.execute('''CREATE TABLE IF NOT EXISTS admins
-                 (
-                     email TEXT PRIMARY KEY
-                 )''')
+        # Create blocked users table
+        c.execute('''CREATE TABLE IF NOT EXISTS blocked_users
+                     (
+                         blocker_email TEXT,
+                         blocked_email TEXT,
+                         timestamp DATETIME,
+                         PRIMARY KEY (blocker_email, blocked_email)
+                     )''')
+        
+        # Create admins table
+        c.execute('''CREATE TABLE IF NOT EXISTS admins
+                     (
+                         email TEXT PRIMARY KEY
+                     )''')
 
-    # Add indexes for performance
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_email)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_email)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp)''')
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_users_verified ON users(verified)''')
-    
-    # Ensure admin exists
-    c.execute("INSERT OR IGNORE INTO admins (email) VALUES (?)", (ADMIN_EMAIL,))
-    
-    conn.commit()
-    conn.close()
+        # Add indexes for performance
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_email)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_email)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_profiles_timestamp ON profiles(timestamp)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_users_verified ON users(verified)''')
+        
+        # Ensure admin exists
+        c.execute("INSERT OR IGNORE INTO admins (email) VALUES (?)", (ADMIN_EMAIL,))
+        conn.commit()
 
 # Initialize session state
 def init_session_state():
     if "current_user" not in st.session_state:
-        # Try to get from cookies
-        if st.experimental_get_query_params().get("logged_in"):
-            st.session_state.current_user = st.experimental_get_query_params().get("logged_in")[0]
-        else:
-            st.session_state.current_user = None
+        # Check for session token in URL
+        if st.query_params.get("session_token"):
+            valid_email = validate_session(st.query_params.get("session_token"))
+            if valid_email:
+                st.session_state.current_user = valid_email
+                st.session_state.session_token = st.query_params.get("session_token")
+    
     if "view" not in st.session_state:
         st.session_state.view = "auth"
     if "current_chat" not in st.session_state:
@@ -211,6 +218,8 @@ def init_session_state():
         st.session_state.login_attempts = {}
     if "session_token" not in st.session_state:
         st.session_state.session_token = None
+    if "csrf_token" not in st.session_state:
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
 
 # Security functions
 def encrypt_data(data):
@@ -247,6 +256,9 @@ def create_session(email):
 
 def validate_session(token):
     """Validate session token"""
+    if not token:
+        return False
+        
     try:
         data_str, signature = token.split("|")
         expected_signature = hmac.new(
@@ -375,32 +387,32 @@ Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 # Verify OTPs
 def verify_otp_in_db(email, user_otp):
-    conn = sqlite3.connect("campus_connect.db")
-    c = conn.cursor()
-    c.execute("SELECT otp, otp_expiry FROM users WHERE email=?", (email,))
-    result = c.fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT otp, otp_expiry FROM users WHERE email=?", (email,))
+        result = c.fetchone()
 
-    if not result or not result[0]:
+    if not result or not result["otp"]:
         return False
 
-    stored_otp, expiry_str = result
+    stored_otp = result["otp"]
+    expiry_str = result["otp_expiry"]
     expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S.%f") if '.' in expiry_str else datetime.strptime(
         expiry_str, "%Y-%m-%d %H:%M:%S")
 
     return stored_otp == user_otp and datetime.now() < expiry
 
 def verify_reset_otp(email, user_otp):
-    conn = sqlite3.connect("campus_connect.db")
-    c = conn.cursor()
-    c.execute("SELECT otp, expiry FROM password_resets WHERE email=?", (email,))
-    result = c.fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT otp, expiry FROM password_resets WHERE email=?", (email,))
+        result = c.fetchone()
 
-    if not result or not result[0]:
+    if not result or not result["otp"]:
         return False
 
-    stored_otp, expiry_str = result
+    stored_otp = result["otp"]
+    expiry_str = result["expiry"]
     expiry = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M:%S.%f") if '.' in expiry_str else datetime.strptime(
         expiry_str, "%Y-%m-%d %H:%M:%S")
 
@@ -433,17 +445,16 @@ def auth_system():
                     peppered_password = st.session_state.temp_password + PEPPER_SECRET
                     hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
 
-                    conn = sqlite3.connect("campus_connect.db")
-                    conn.execute(
-                        "UPDATE users SET password=?, salt=?, verified=1, otp=NULL, otp_expiry=NULL WHERE email=?",
-                        (hashed_pw, salt, email)
-                    )
-                    conn.commit()
-                    conn.close()
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            "UPDATE users SET password=?, salt=?, verified=1, otp=NULL, otp_expiry=NULL WHERE email=?",
+                            (hashed_pw, salt, email)
+                        )
+                        conn.commit()
 
                     st.session_state.current_user = email
                     st.session_state.session_token = create_session(email)
-                    st.experimental_set_query_params(logged_in=email)
+                    st.query_params["session_token"] = st.session_state.session_token
                     st.session_state.pending_verification = False
                     st.session_state.view = "profile"
                     st.success("Account verified! Please create your profile.")
@@ -453,10 +464,9 @@ def auth_system():
                     st.session_state.otp_attempts += 1
                     if st.session_state.otp_attempts >= 3:
                         st.error("Too many failed attempts. Please register again.")
-                        conn = sqlite3.connect("campus_connect.db")
-                        conn.execute("DELETE FROM users WHERE email=?", (email,))
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM users WHERE email=?", (email,))
+                            conn.commit()
                         st.session_state.pending_verification = False
                         time.sleep(2)
                         st.rerun()
@@ -468,13 +478,12 @@ def auth_system():
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
-                conn = sqlite3.connect("campus_connect.db")
-                conn.execute(
-                    "UPDATE users SET otp=?, otp_expiry=? WHERE email=?",
-                    (new_otp, expiry, email)
-                )
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute(
+                        "UPDATE users SET otp=?, otp_expiry=? WHERE email=?",
+                        (new_otp, expiry, email)
+                    )
+                    conn.commit()
 
                 if send_otp_email(email, new_otp):
                     st.success("New OTP sent!")
@@ -483,10 +492,9 @@ def auth_system():
 
         with col3:
             if st.button("Cancel"):
-                conn = sqlite3.connect("campus_connect.db")
-                conn.execute("DELETE FROM users WHERE email=?", (email,))
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute("DELETE FROM users WHERE email=?", (email,))
+                    conn.commit()
 
                 st.session_state.pending_verification = False
                 st.info("Registration cancelled")
@@ -515,17 +523,16 @@ def auth_system():
                     salt = bcrypt.gensalt()
                     hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
 
-                    conn = sqlite3.connect("campus_connect.db")
-                    conn.execute(
-                        "UPDATE users SET password=?, salt=? WHERE email=?",
-                        (hashed_pw, salt, st.session_state.temp_email)
-                    )
-                    conn.execute(
-                        "DELETE FROM password_resets WHERE email=?",
-                        (st.session_state.temp_email,)
-                    )
-                    conn.commit()
-                    conn.close()
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            "UPDATE users SET password=?, salt=? WHERE email=?",
+                            (hashed_pw, salt, st.session_state.temp_email)
+                        )
+                        conn.execute(
+                            "DELETE FROM password_resets WHERE email=?",
+                            (st.session_state.temp_email,)
+                        )
+                        conn.commit()
 
                     st.success("Password updated successfully! Please login with your new password.")
                     st.session_state.resetting_password = False
@@ -557,10 +564,9 @@ def auth_system():
                     st.session_state.reset_otp_attempts += 1
                     if st.session_state.reset_otp_attempts >= 3:
                         st.error("Too many failed attempts. Please start over.")
-                        conn = sqlite3.connect("campus_connect.db")
-                        conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                            conn.commit()
                         st.session_state.reset_otp_verification = False
                         time.sleep(2)
                         st.rerun()
@@ -572,13 +578,12 @@ def auth_system():
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
-                conn = sqlite3.connect("campus_connect.db")
-                conn.execute(
-                    "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
-                    (email, new_otp, expiry)
-                )
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                        (email, new_otp, expiry)
+                    )
+                    conn.commit()
 
                 if send_reset_otp_email(email, new_otp):
                     st.success("New OTP sent!")
@@ -587,10 +592,9 @@ def auth_system():
 
         with col3:
             if st.button("Cancel", key="cancel_reset_otp"):
-                conn = sqlite3.connect("campus_connect.db")
-                conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute("DELETE FROM password_resets WHERE email=?", (email,))
+                    conn.commit()
                 st.session_state.reset_otp_verification = False
                 st.info("Password reset cancelled")
                 time.sleep(1)
@@ -604,11 +608,21 @@ def auth_system():
 
     with login_tab:
         with st.form("login_form"):
+            # CSRF protection
+            st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+            st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+            
             email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
             password = st.text_input("Password", type="password")
             remember_me = st.checkbox("Remember me")
 
             if st.form_submit_button("Login"):
+                # CSRF validation
+                if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                    log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
+                    st.error("Security error. Please try again.")
+                    return
+                
                 # Rate limiting
                 ip = st.experimental_user.get("ip", "unknown")
                 now = time.time()
@@ -630,11 +644,10 @@ def auth_system():
                 if not is_valid_student_email(email):
                     st.error("Invalid student email format. Must start with 3 numbers")
                 else:
-                    conn = sqlite3.connect("campus_connect.db")
-                    c = conn.cursor()
-                    c.execute("SELECT password, salt, verified, banned FROM users WHERE email=?", (email,))
-                    result = c.fetchone()
-                    conn.close()
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT password, salt, verified, banned FROM users WHERE email=?", (email,))
+                        result = c.fetchone()
 
                     if result:
                         hashed_pw, salt, verified, banned = result
@@ -658,15 +671,14 @@ def auth_system():
                                 else:
                                     st.session_state.current_user = email
                                     st.session_state.session_token = create_session(email)
-                                    st.experimental_set_query_params(logged_in=email)
+                                    st.query_params["session_token"] = st.session_state.session_token
                                     
                                     # Check if profile exists
-                                    conn = sqlite3.connect("campus_connect.db")
-                                    profile_exists = conn.execute(
-                                        "SELECT 1 FROM profiles WHERE email=?",
-                                        (email,)
-                                    ).fetchone()
-                                    conn.close()
+                                    with get_db_connection() as conn:
+                                        profile_exists = conn.execute(
+                                            "SELECT 1 FROM profiles WHERE email=?",
+                                            (email,)
+                                        ).fetchone()
 
                                     st.session_state.view = "profile" if not profile_exists else "discover"
                                     st.rerun()
@@ -689,11 +701,21 @@ def auth_system():
 
     with register_tab:
         with st.form("register_form"):
+            # CSRF protection
+            st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+            st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+            
             email = st.text_input("Student Email (must start with 3 numbers)", key="register_email")
             password = st.text_input("Create Password (min 8 characters)", type="password")
             confirm_password = st.text_input("Confirm Password", type="password")
 
             if st.form_submit_button("Create Account"):
+                # CSRF validation
+                if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                    log_security_event("CSRF_FAILURE", f"Invalid CSRF token during registration")
+                    st.error("Security error. Please try again.")
+                    return
+                
                 if not is_valid_student_email(email):
                     st.error("Invalid student email format. Must start with 3 numbers")
                 elif len(password) < 8:
@@ -702,35 +724,33 @@ def auth_system():
                     st.error("Passwords do not match")
                 else:
                     # Check if email exists
-                    conn = sqlite3.connect("campus_connect.db")
-                    c = conn.cursor()
-                    c.execute("SELECT 1 FROM users WHERE email=?", (email,))
-                    if c.fetchone():
-                        conn.close()
-                        st.error("Email already registered")
-                    else:
-                        # Generate OTP
-                        otp = generate_otp()
-                        expiry = datetime.now() + timedelta(minutes=10)
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT 1 FROM users WHERE email=?", (email,))
+                        if c.fetchone():
+                            st.error("Email already registered")
+                        else:
+                            # Generate OTP
+                            otp = generate_otp()
+                            expiry = datetime.now() + timedelta(minutes=10)
 
-                        # Store temporary user record with OTP
-                        c.execute(
-                        "INSERT INTO users (email, verified, otp, otp_expiry) VALUES (?, ?, ?, ?)",
-                        (email, 0, otp, expiry)
-                    )
-                    conn.commit()
+                            # Store temporary user record with OTP
+                            c.execute(
+                                "INSERT INTO users (email, verified, otp, otp_expiry) VALUES (?, ?, ?, ?)",
+                                (email, 0, otp, expiry)
+                            )
+                            conn.commit()
 
-                    if send_otp_email(email, otp):
-                        st.session_state.pending_verification = True
-                        st.session_state.temp_email = email
-                        st.session_state.temp_password = password
-                        st.session_state.otp_attempts = 0
-                        st.rerun()
-                    else:
-                        # Rollback if email fails
-                        conn.rollback()
-                        st.error("Failed to send OTP. Try again.")
-                conn.close()
+                            if send_otp_email(email, otp):
+                                st.session_state.pending_verification = True
+                                st.session_state.temp_email = email
+                                st.session_state.temp_password = password
+                                st.session_state.otp_attempts = 0
+                                st.rerun()
+                            else:
+                                # Rollback if email fails
+                                conn.rollback()
+                                st.error("Failed to send OTP. Try again.")
 
 # Forgot password flow
 def forgot_password():
@@ -743,10 +763,10 @@ def forgot_password():
             if not is_valid_student_email(email):
                 st.error("Invalid student email format")
             else:
-                conn = sqlite3.connect("campus_connect.db")
-                user_exists = conn.execute(
-                    "SELECT 1 FROM users WHERE email=?", (email,)
-                ).fetchone()
+                with get_db_connection() as conn:
+                    user_exists = conn.execute(
+                        "SELECT 1 FROM users WHERE email=?", (email,)
+                    ).fetchone()
 
                 if not user_exists:
                     st.error("Email not registered")
@@ -755,12 +775,12 @@ def forgot_password():
                     otp = generate_otp()
                     expiry = datetime.now() + timedelta(minutes=10)
 
-                    conn.execute(
-                        "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
-                        (email, otp, expiry)
-                    )
-                    conn.commit()
-                    conn.close()
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO password_resets (email, otp, expiry) VALUES (?, ?, ?)",
+                            (email, otp, expiry)
+                        )
+                        conn.commit()
 
                     if send_reset_otp_email(email, otp):
                         st.session_state.reset_otp_verification = True
@@ -789,12 +809,11 @@ def create_profile():
         }
 
     # Check if profile already exists
-    conn = sqlite3.connect("campus_connect.db")
-    profile_exists = conn.execute(
-        "SELECT 1 FROM profiles WHERE email=?",
-        (st.session_state.current_user,)
-    ).fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        profile_exists = conn.execute(
+            "SELECT 1 FROM profiles WHERE email=?",
+            (st.session_state.current_user,)
+        ).fetchone()
     
     if profile_exists:
         st.warning("You already have a profile. Redirecting to edit page...")
@@ -803,6 +822,10 @@ def create_profile():
         st.rerun()
 
     with st.form("profile_form", clear_on_submit=True):
+        # CSRF protection
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+        st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+        
         email = st.text_input("Student Email", value=st.session_state.current_user, disabled=True)
         
         # Name field with validation
@@ -844,6 +867,12 @@ def create_profile():
         submitted = st.form_submit_button("Save Profile")
         
         if submitted:
+            # CSRF validation
+            if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                log_security_event("CSRF_FAILURE", f"Invalid CSRF token during profile creation")
+                st.error("Security error. Please try again.")
+                return
+            
             # Reset form errors
             st.session_state.form_errors = {
                 "name": False,
@@ -874,34 +903,32 @@ def create_profile():
                     st.error("Photo exceeds 10MB size limit")
                     return
 
-                conn = sqlite3.connect("campus_connect.db")
-                # Check if profile exists again to prevent race condition
-                exists = conn.execute(
-                    "SELECT 1 FROM profiles WHERE email=?",
-                    (st.session_state.current_user,)
-                ).fetchone()
-                
-                if exists:
-                    conn.close()
-                    st.warning("Profile already exists. Redirecting to edit page...")
-                    st.session_state.view = "edit_profile"
-                    time.sleep(1)
-                    st.rerun()
-                
-                conn.execute('''INSERT INTO profiles
-                                    (email, name, age, gender, bio, interests, photo, timestamp, intention)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                             (st.session_state.current_user, 
-                              sanitize_input(name), 
-                              age, 
-                              sanitize_input(gender), 
-                              sanitize_input(bio),
-                              sanitize_input(", ".join(interests)), 
-                              photo_data, 
-                              datetime.now(), 
-                              sanitize_input(intention)))
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    # Check if profile exists again to prevent race condition
+                    exists = conn.execute(
+                        "SELECT 1 FROM profiles WHERE email=?",
+                        (st.session_state.current_user,)
+                    ).fetchone()
+                    
+                    if exists:
+                        st.warning("Profile already exists. Redirecting to edit page...")
+                        st.session_state.view = "edit_profile"
+                        time.sleep(1)
+                        st.rerun()
+                    
+                    conn.execute('''INSERT INTO profiles
+                                        (email, name, age, gender, bio, interests, photo, timestamp, intention)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                 (st.session_state.current_user, 
+                                  sanitize_input(name), 
+                                  age, 
+                                  sanitize_input(gender), 
+                                  sanitize_input(bio),
+                                  sanitize_input(", ".join(interests)), 
+                                  photo_data, 
+                                  datetime.now(), 
+                                  sanitize_input(intention)))
+                    conn.commit()
 
                 st.success("Profile created successfully!")
                 st.session_state.view = "discover"
@@ -917,12 +944,11 @@ def create_profile():
 
 # Profile Editing
 def edit_profile():
-    conn = sqlite3.connect("campus_connect.db")
-    profile = conn.execute(
-        "SELECT * FROM profiles WHERE email=?",
-        (st.session_state.current_user,)
-    ).fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        profile = conn.execute(
+            "SELECT * FROM profiles WHERE email=?",
+            (st.session_state.current_user,)
+        ).fetchone()
 
     if not profile:
         st.warning("No profile found. Redirecting to create profile...")
@@ -934,22 +960,26 @@ def edit_profile():
     st.caption("Update your information")
 
     with st.form("edit_profile_form"):
-        name = st.text_input("Full Name", value=profile[1])
-        age = st.slider("Age", 18, 30, value=profile[2])
+        # CSRF protection
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+        st.hidden_input("csrf_token", value=st.session_state.csrf_token)
+        
+        name = st.text_input("Full Name", value=profile["name"])
+        age = st.slider("Age", 18, 30, value=profile["age"])
         gender = st.selectbox("Gender",
                               ["Male", "Female", "Non-binary", "Prefer not to say"],
-                              index=["Male", "Female", "Non-binary", "Prefer not to say"].index(profile[3]))
-        bio = st.text_area("About Me", value=profile[4])
-        current_interests = profile[5].split(", ") if profile[5] else []
+                              index=["Male", "Female", "Non-binary", "Prefer not to say"].index(profile["gender"]))
+        bio = st.text_area("About Me", value=profile["bio"])
+        current_interests = profile["interests"].split(", ") if profile["interests"] else []
         interests = st.multiselect("Interests", [
             "Sports", "Music", "Gaming", "Academics",
             "Art", "Travel", "Food", "Movies", "Dancing"
         ], default=current_interests)
 
         # Show current photo if exists
-        if profile[6]:
+        if profile["photo"]:
             try:
-                st.image(Image.open(io.BytesIO(profile[6])), width=150, caption="Current Photo")
+                st.image(Image.open(io.BytesIO(profile["photo"])), width=150, caption="Current Photo")
             except:
                 st.image("default_profile.png", width=150, caption="Current Photo")
 
@@ -959,7 +989,7 @@ def edit_profile():
 
         # Intention field
         intentions = ["Relationship", "Friendship", "Hookups", "Not sure yet"]
-        current_intention = profile[8] if len(profile) > 8 else "Not sure yet"
+        current_intention = profile["intention"] if "intention" in profile else "Not sure yet"
         intention = st.radio("What are you looking for?",
                              intentions,
                              index=intentions.index(current_intention))
@@ -975,9 +1005,15 @@ def edit_profile():
             st.rerun()
 
         if submit:
+            # CSRF validation
+            if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
+                log_security_event("CSRF_FAILURE", f"Invalid CSRF token during profile update")
+                st.error("Security error. Please try again.")
+                return
+                
             try:
                 # Use new photo if provided, otherwise keep existing
-                photo_data = profile[6]
+                photo_data = profile["photo"]
                 if photo:
                     if photo.size > 10 * 1024 * 1024:  # 10MB limit
                         st.error("Photo size must be less than 10MB")
@@ -985,26 +1021,25 @@ def edit_profile():
                     else:
                         photo_data = photo.read()
 
-                conn = sqlite3.connect("campus_connect.db")
-                conn.execute('''UPDATE profiles
-                                SET name=?,
-                                    age=?,
-                                    gender=?,
-                                    bio=?,
-                                    interests=?,
-                                    photo=?,
-                                    intention=?
-                                WHERE email = ?''',
-                             (sanitize_input(name), 
-                              age, 
-                              sanitize_input(gender), 
-                              sanitize_input(bio), 
-                              sanitize_input(", ".join(interests)),
-                              photo_data, 
-                              sanitize_input(intention), 
-                              st.session_state.current_user))
-                conn.commit()
-                conn.close()
+                with get_db_connection() as conn:
+                    conn.execute('''UPDATE profiles
+                                    SET name=?,
+                                        age=?,
+                                        gender=?,
+                                        bio=?,
+                                        interests=?,
+                                        photo=?,
+                                        intention=?
+                                    WHERE email = ?''',
+                                 (sanitize_input(name), 
+                                  age, 
+                                  sanitize_input(gender), 
+                                  sanitize_input(bio), 
+                                  sanitize_input(", ".join(interests)),
+                                  photo_data, 
+                                  sanitize_input(intention), 
+                                  st.session_state.current_user))
+                    conn.commit()
 
                 st.success("Profile updated successfully!")
                 st.session_state.view = "discover"
@@ -1015,25 +1050,23 @@ def edit_profile():
 
 # Record like action
 def record_like(from_email, to_email):
-    conn = sqlite3.connect("campus_connect.db")
-    conn.execute(
-        '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
-           VALUES (?, ?, ?, ?, ?)''',
-        (str(uuid4()), from_email, to_email, "liked", datetime.now())
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        conn.execute(
+            '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
+               VALUES (?, ?, ?, ?, ?)''',
+            (str(uuid4()), from_email, to_email, "liked", datetime.now())
+        )
+        conn.commit()
 
 # Record connection request
 def record_connection_request(from_email, to_email):
-    conn = sqlite3.connect("campus_connect.db")
-    conn.execute(
-        '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
-           VALUES (?, ?, ?, ?, ?)''',
-        (str(uuid4()), from_email, to_email, "requested", datetime.now())
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        conn.execute(
+            '''INSERT INTO connections (id, from_email, to_email, status, timestamp)
+               VALUES (?, ?, ?, ?, ?)''',
+            (str(uuid4()), from_email, to_email, "requested", datetime.now())
+        )
+        conn.commit()
 
 # Discover Profiles
 def discover_profiles():
@@ -1063,8 +1096,15 @@ def discover_profiles():
         st.session_state.current_index = 0
 
     # Unpack profile data
-    email, name, age, gender, bio, interests, photo, intention = available_profiles[
-        st.session_state.current_index]
+    profile = available_profiles[st.session_state.current_index]
+    email = profile["email"]
+    name = profile["name"]
+    age = profile["age"]
+    gender = profile["gender"]
+    bio = profile["bio"]
+    interests = profile["interests"]
+    photo = profile["photo"]
+    intention = profile["intention"] if "intention" in profile else "Not sure yet"
 
     # Display the profile with swipeable interface
     with st.container():
@@ -1129,58 +1169,60 @@ def discover_profiles():
 
 # Get profiles with optimized query
 def get_profiles(current_user):
-    conn = sqlite3.connect("campus_connect.db")
-    
-    try:
-        # Pre-fetch blocked users
-        blocked_users = conn.execute(
-            "SELECT blocked_email FROM blocked_users WHERE blocker_email=?",
-            (current_user,)
-        ).fetchall()
-        blocked_emails = [row[0] for row in blocked_users]
-
-        # Get profiles excluding current user and blocked users
-        profiles = []
-        for row in conn.execute(
-                '''SELECT email, name, age, gender, bio, interests, photo, intention
-                   FROM profiles
-                   WHERE email != ?''',
+    with get_db_connection() as conn:
+        try:
+            # Pre-fetch blocked users
+            blocked_users = conn.execute(
+                "SELECT blocked_email FROM blocked_users WHERE blocker_email=?",
                 (current_user,)
-        ).fetchall():
-            if row[0] not in blocked_emails:
-                profiles.append(row)
-                
-        return profiles
-    except sqlite3.Error as e:
-        st.error(f"Database error: {e}")
-        return []
-    finally:
-        conn.close()
+            ).fetchall()
+            blocked_emails = [row["blocked_email"] for row in blocked_users]
+
+            # Get profiles excluding current user and blocked users
+            profiles = []
+            for row in conn.execute(
+                    '''SELECT email, name, age, gender, bio, interests, photo, intention
+                       FROM profiles
+                       WHERE email != ?''',
+                    (current_user,)
+            ).fetchall():
+                if row["email"] not in blocked_emails:
+                    profiles.append(dict(row))
+                    
+            return profiles
+        except sqlite3.Error as e:
+            st.error(f"Database error: {e}")
+            return []
 
 # Connections Management
 def view_connections():
     current_user = st.session_state.current_user
-    conn = sqlite3.connect("campus_connect.db")
 
     st.title("Your Connections")
 
     # Pending Requests
     st.subheader("Pending Requests")
-    pending_requests = conn.execute(
-        '''SELECT c.id, c.from_email, c.timestamp, p.name, p.photo, p.bio
-           FROM connections c
-                    JOIN profiles p ON c.from_email = p.email
-           WHERE c.to_email = ?
-             AND c.status = 'requested'
-           ORDER BY c.timestamp DESC''',
-        (current_user,)
-    ).fetchall()
+    with get_db_connection() as conn:
+        pending_requests = conn.execute(
+            '''SELECT c.id, c.from_email, c.timestamp, p.name, p.photo, p.bio
+               FROM connections c
+                        JOIN profiles p ON c.from_email = p.email
+               WHERE c.to_email = ?
+                 AND c.status = 'requested'
+               ORDER BY c.timestamp DESC''',
+            (current_user,)
+        ).fetchall()
 
     if not pending_requests:
         st.info("No pending connection requests")
     else:
         for req in pending_requests:
-            req_id, from_email, timestamp, name, photo, bio = req
+            req_id = req["id"]
+            from_email = req["from_email"]
+            timestamp = req["timestamp"]
+            name = req["name"]
+            photo = req["photo"]
+            bio = req["bio"]
 
             col1, col2 = st.columns([1, 4])
             with col1:
@@ -1212,11 +1254,12 @@ def view_connections():
                 col_accept, col_reject, _ = st.columns([1, 1, 2])
                 with col_accept:
                     if st.button("Accept", key=f"accept_{req_id}"):
-                        conn.execute(
-                            "UPDATE connections SET status='connected' WHERE id=?",
-                            (req_id,)
-                        )
-                        conn.commit()
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "UPDATE connections SET status='connected' WHERE id=?",
+                                (req_id,)
+                            )
+                            conn.commit()
                         # Add notification
                         notification = {
                             "type": "connection_accepted",
@@ -1228,48 +1271,55 @@ def view_connections():
                         st.rerun()
                 with col_reject:
                     if st.button("Reject", key=f"reject_{req_id}"):
-                        conn.execute(
-                            "DELETE FROM connections WHERE id=?",
-                            (req_id,)
-                        )
-                        conn.commit()
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "DELETE FROM connections WHERE id=?",
+                                (req_id,)
+                            )
+                            conn.commit()
                         st.rerun()
             st.divider()
 
     # Your Connections
     st.subheader("Your Connections")
-    connections = conn.execute(
-        '''SELECT c.id,
-                  CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
-                  c.timestamp,
-                  p.name,
-                  p.photo
-           FROM connections c
-                    JOIN profiles p ON (CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END) = p.email
-           WHERE (c.from_email = ? OR c.to_email = ?)
-             AND c.status = 'connected'
-           ORDER BY c.timestamp DESC''',
-        (current_user, current_user, current_user, current_user)
-    ).fetchall()
+    with get_db_connection() as conn:
+        connections = conn.execute(
+            '''SELECT c.id,
+                      CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
+                      c.timestamp,
+                      p.name,
+                      p.photo
+               FROM connections c
+                        JOIN profiles p ON (CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END) = p.email
+               WHERE (c.from_email = ? OR c.to_email = ?)
+                 AND c.status = 'connected'
+               ORDER BY c.timestamp DESC''',
+            (current_user, current_user, current_user, current_user)
+        ).fetchall()
 
     if not connections:
         st.info("You don't have any connections yet")
     else:
         for conn_item in connections:
-            conn_id, other_email, timestamp, name, photo = conn_item
+            conn_id = conn_item["id"]
+            other_email = conn_item["other_email"]
+            timestamp = conn_item["timestamp"]
+            name = conn_item["name"]
+            photo = conn_item["photo"]
 
             # Check for unread messages
-            unread_count = conn.execute(
-                '''SELECT COUNT(*)
-                   FROM messages
-                   WHERE chat_id IN (SELECT MIN(id)
-                                     FROM messages
-                                     WHERE (sender = ? AND receiver = ?)
-                                        OR (sender = ? AND receiver = ?))
-                     AND receiver = ?
-                     AND read =0''',
-                (current_user, other_email, other_email, current_user, current_user)
-            ).fetchone()[0]
+            with get_db_connection() as conn:
+                unread_count = conn.execute(
+                    '''SELECT COUNT(*)
+                       FROM messages
+                       WHERE chat_id IN (SELECT MIN(id)
+                                         FROM messages
+                                         WHERE (sender = ? AND receiver = ?)
+                                            OR (sender = ? AND receiver = ?))
+                         AND receiver = ?
+                         AND read =0''',
+                    (current_user, other_email, other_email, current_user, current_user)
+                ).fetchone()[0]
 
             col1, col2 = st.columns([1, 4])
             with col1:
@@ -1319,41 +1369,40 @@ def view_connections():
 
                 # Block button for connections
                 if st.button("🚫 Block", key=f"block_{conn_id}"):
-                    conn.execute(
-                        '''INSERT OR IGNORE INTO blocked_users 
-                           (blocker_email, blocked_email, timestamp)
-                           VALUES (?, ?, ?)''',
-                        (current_user, other_email, datetime.now())
-                    )
-                    conn.execute(
-                        "DELETE FROM connections WHERE id=?",
-                        (conn_id,)
-                    )
-                    conn.commit()
+                    with get_db_connection() as conn:
+                        conn.execute(
+                            '''INSERT OR IGNORE INTO blocked_users 
+                               (blocker_email, blocked_email, timestamp)
+                               VALUES (?, ?, ?)''',
+                            (current_user, other_email, datetime.now())
+                        )
+                        conn.execute(
+                            "DELETE FROM connections WHERE id=?",
+                            (conn_id,)
+                        )
+                        conn.commit()
                     st.success(f"You have blocked {name}")
                     st.rerun()
             st.divider()
-
-    conn.close()
 
 # Chat Interface
 def chat_interface():
     current_user = st.session_state.current_user
     other_user = st.session_state.current_chat
 
-    conn = sqlite3.connect("campus_connect.db")
-    other_profile = conn.execute(
-        "SELECT name, photo FROM profiles WHERE email=?",
-        (other_user,)
-    ).fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        other_profile = conn.execute(
+            "SELECT name, photo FROM profiles WHERE email=?",
+            (other_user,)
+        ).fetchone()
 
     if not other_profile:
         st.error("Profile not found")
         st.session_state.view = "connections"
         st.rerun()
 
-    other_name, other_photo = other_profile
+    other_name = other_profile["name"]
+    other_photo = other_profile["photo"]
 
     # Chat header
     col1, col2, col3 = st.columns([1, 8, 1])
@@ -1375,26 +1424,25 @@ def chat_interface():
     chat_id = "_".join(sorted([current_user, other_user]))
 
     # Get messages
-    conn = sqlite3.connect("campus_connect.db")
-    messages = conn.execute(
-        '''SELECT id, sender, receiver, message, time, read
-           FROM messages
-           WHERE chat_id=?
-           ORDER BY time''',
-        (chat_id,)
-    ).fetchall()
+    with get_db_connection() as conn:
+        messages = conn.execute(
+            '''SELECT id, sender, receiver, message, time, read
+               FROM messages
+               WHERE chat_id=?
+               ORDER BY time''',
+            (chat_id,)
+        ).fetchall()
 
-    # Mark received messages as read
-    conn.execute(
-        '''UPDATE messages
-           SET read=1
-           WHERE receiver = ?
-             AND chat_id = ?
-             AND read =0''',
-        (current_user, chat_id)
-    )
-    conn.commit()
-    conn.close()
+        # Mark received messages as read
+        conn.execute(
+            '''UPDATE messages
+               SET read=1
+               WHERE receiver = ?
+                 AND chat_id = ?
+                 AND read =0''',
+            (current_user, chat_id)
+        )
+        conn.commit()
 
     # Chat container styling
     st.markdown(
@@ -1437,7 +1485,12 @@ def chat_interface():
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
         
         for msg in messages:
-            msg_id, sender, receiver, message, msg_time, read = msg
+            msg_id = msg["id"]
+            sender = msg["sender"]
+            receiver = msg["receiver"]
+            message = msg["message"]
+            msg_time = msg["time"]
+            read = msg["read"]
             
             # Convert timestamp if needed
             if isinstance(msg_time, str):
@@ -1468,16 +1521,15 @@ def chat_interface():
     # Message input
     if prompt := st.chat_input("Type a message..."):
         # Add message to database
-        conn = sqlite3.connect("campus_connect.db")
-        conn.execute(
-            '''INSERT INTO messages
-                   (id, chat_id, sender, receiver, message, time, read)
-               VALUES (?, ?, ?, ?, ?, ?, ?)''',
-            (str(uuid4()), chat_id, current_user, other_user,
-             prompt, datetime.now(), 0)
-        )
-        conn.commit()
-        conn.close()
+        with get_db_connection() as conn:
+            conn.execute(
+                '''INSERT INTO messages
+                       (id, chat_id, sender, receiver, message, time, read)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (str(uuid4()), chat_id, current_user, other_user,
+                 prompt, datetime.now(), 0)
+            )
+            conn.commit()
         st.rerun()
 
 # Video Call Interface
@@ -1562,18 +1614,17 @@ def report_user():
 
         if submitted:
             report_id = str(uuid4())
-            conn = sqlite3.connect("campus_connect.db")
-            conn.execute('''INSERT INTO reports
-                                (id, reporter_email, reported_email, reason, details, timestamp)
-                            VALUES (?, ?, ?, ?, ?, ?)''',
-                         (report_id,
-                          st.session_state.current_user,
-                          st.session_state.reporting_user,
-                          reason,
-                          details,
-                          datetime.now()))
-            conn.commit()
-            conn.close()
+            with get_db_connection() as conn:
+                conn.execute('''INSERT INTO reports
+                                    (id, reporter_email, reported_email, reason, details, timestamp)
+                                VALUES (?, ?, ?, ?, ?, ?)''',
+                             (report_id,
+                              st.session_state.current_user,
+                              st.session_state.reporting_user,
+                              reason,
+                              details,
+                              datetime.now()))
+                conn.commit()
 
             # Send email notification to admin
             send_report_notification(
@@ -1602,32 +1653,33 @@ def delete_account():
                 st.error("Please enter your password and confirm deletion")
             else:
                 # Verify password
-                conn = sqlite3.connect("campus_connect.db")
-                c = conn.cursor()
-                c.execute("SELECT password, salt FROM users WHERE email=?",
-                          (st.session_state.current_user,))
-                result = c.fetchone()
+                with get_db_connection() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT password, salt FROM users WHERE email=?",
+                              (st.session_state.current_user,))
+                    result = c.fetchone()
 
                 if result:
-                    hashed_pw, salt = result
+                    hashed_pw = result["password"]
+                    salt = result["salt"]
                     peppered_password = password + PEPPER_SECRET
                     if bcrypt.hashpw(peppered_password.encode(), salt) == hashed_pw:
                         # Delete all user data
-                        conn.execute("DELETE FROM users WHERE email=?",
-                                     (st.session_state.current_user,))
-                        conn.execute("DELETE FROM profiles WHERE email=?",
-                                     (st.session_state.current_user,))
-                        conn.execute("DELETE FROM connections WHERE from_email=? OR to_email=?",
-                                     (st.session_state.current_user, st.session_state.current_user))
-                        conn.execute("DELETE FROM messages WHERE sender=? OR receiver=?",
-                                     (st.session_state.current_user, st.session_state.current_user))
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute("DELETE FROM users WHERE email=?",
+                                         (st.session_state.current_user,))
+                            conn.execute("DELETE FROM profiles WHERE email=?",
+                                         (st.session_state.current_user,))
+                            conn.execute("DELETE FROM connections WHERE from_email=? OR to_email=?",
+                                         (st.session_state.current_user, st.session_state.current_user))
+                            conn.execute("DELETE FROM messages WHERE sender=? OR receiver=?",
+                                         (st.session_state.current_user, st.session_state.current_user))
+                            conn.commit()
 
                         st.success("Account deleted successfully")
                         st.session_state.clear()
+                        st.query_params.clear()
                         st.session_state.view = "auth"
-                        st.experimental_set_query_params()
                         time.sleep(2)
                         st.rerun()
                     else:
@@ -1644,12 +1696,11 @@ def show_notifications():
     st.title("Notifications")
     for notification in st.session_state.notifications:
         if notification["type"] == "connection_accepted":
-            conn = sqlite3.connect("campus_connect.db")
-            name = conn.execute(
-                "SELECT name FROM profiles WHERE email=?",
-                (notification["from_user"],)
-            ).fetchone()[0]
-            conn.close()
+            with get_db_connection() as conn:
+                name = conn.execute(
+                    "SELECT name FROM profiles WHERE email=?",
+                    (notification["from_user"],)
+                ).fetchone()["name"]
 
             st.write(f"✅ {name} accepted your connection request")
             st.caption(notification["timestamp"].strftime("%b %d, %Y at %H:%M"))
@@ -1662,12 +1713,11 @@ def admin_panel():
         return
         
     # Check if user is admin
-    conn = sqlite3.connect("campus_connect.db")
-    is_admin = conn.execute(
-        "SELECT 1 FROM admins WHERE email=?", 
-        (st.session_state.current_user,)
-    ).fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        is_admin = conn.execute(
+            "SELECT 1 FROM admins WHERE email=?", 
+            (st.session_state.current_user,)
+        ).fetchone()
     
     if not is_admin:
         st.error("Admin access only")
@@ -1677,16 +1727,18 @@ def admin_panel():
     
     # User management
     st.subheader("User Management")
-    conn = sqlite3.connect("campus_connect.db")
-    users = conn.execute(
-        "SELECT email, verified, banned FROM users"
-    ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        users = conn.execute(
+            "SELECT email, verified, banned FROM users"
+        ).fetchall()
     
     if not users:
         st.info("No users found")
     else:
-        for email, verified, banned in users:
+        for user in users:
+            email = user["email"]
+            verified = user["verified"]
+            banned = user["banned"]
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.write(f"**{email}**")
@@ -1695,26 +1747,24 @@ def admin_panel():
             with col2:
                 if banned:
                     if st.button("Unban", key=f"unban_{email}"):
-                        conn = sqlite3.connect("campus_connect.db")
-                        conn.execute(
-                            "UPDATE users SET banned=0 WHERE email=?",
-                            (email,)
-                        )
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "UPDATE users SET banned=0 WHERE email=?",
+                                (email,)
+                            )
+                            conn.commit()
                         st.rerun()
                 else:
                     if st.button("Ban", key=f"ban_{email}"):
                         with st.expander("Confirm Ban", expanded=True):
                             st.warning(f"Are you sure you want to ban {email}?")
                             if st.text_input("Enter 'CONFIRM BAN' to proceed") == "CONFIRM BAN":
-                                conn = sqlite3.connect("campus_connect.db")
-                                conn.execute(
-                                    "UPDATE users SET banned=1 WHERE email=?",
-                                    (email,)
-                                )
-                                conn.commit()
-                                conn.close()
+                                with get_db_connection() as conn:
+                                    conn.execute(
+                                        "UPDATE users SET banned=1 WHERE email=?",
+                                        (email,)
+                                    )
+                                    conn.commit()
                                 log_security_event("USER_BANNED", f"Banned user {email}")
                                 st.rerun()
                         
@@ -1723,29 +1773,33 @@ def admin_panel():
                     with st.expander("Confirm Delete", expanded=True):
                         st.warning(f"Are you sure you want to delete {email}?")
                         if st.text_input("Enter 'CONFIRM DELETE' to proceed") == "CONFIRM DELETE":
-                            conn = sqlite3.connect("campus_connect.db")
-                            conn.execute("DELETE FROM users WHERE email=?", (email,))
-                            conn.execute("DELETE FROM profiles WHERE email=?", (email,))
-                            conn.commit()
-                            conn.close()
+                            with get_db_connection() as conn:
+                                conn.execute("DELETE FROM users WHERE email=?", (email,))
+                                conn.execute("DELETE FROM profiles WHERE email=?", (email,))
+                                conn.commit()
                             log_security_event("USER_DELETED", f"Deleted user {email}")
                             st.rerun()
     
     # Report management
     st.subheader("Report Management")
-    conn = sqlite3.connect("campus_connect.db")
-    reports = conn.execute(
-        """SELECT id, reporter_email, reported_email, reason, details, timestamp, status
-        FROM reports
-        ORDER BY timestamp DESC"""
-    ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        reports = conn.execute(
+            """SELECT id, reporter_email, reported_email, reason, details, timestamp, status
+            FROM reports
+            ORDER BY timestamp DESC"""
+        ).fetchall()
     
     if not reports:
         st.info("No reports found")
     else:
         for report in reports:
-            r_id, reporter, reported, reason, details, timestamp, status = report
+            r_id = report["id"]
+            reporter = report["reporter_email"]
+            reported = report["reported_email"]
+            reason = report["reason"]
+            details = report["details"]
+            timestamp = report["timestamp"]
+            status = report["status"]
             with st.expander(f"Report #{r_id[:8]} - {status}"):
                 st.write(f"**Reporter:** {reporter}")
                 st.write(f"**Reported:** {reported}")
@@ -1756,23 +1810,21 @@ def admin_panel():
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Mark Resolved", key=f"resolve_{r_id}"):
-                        conn = sqlite3.connect("campus_connect.db")
-                        conn.execute(
-                            "UPDATE reports SET status='resolved' WHERE id=?",
-                            (r_id,)
-                        )
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "UPDATE reports SET status='resolved' WHERE id=?",
+                                (r_id,)
+                            )
+                            conn.commit()
                         st.rerun()
                 with col2:
                     if st.button("Delete Report", key=f"delrep_{r_id}"):
-                        conn = sqlite3.connect("campus_connect.db")
-                        conn.execute(
-                            "DELETE FROM reports WHERE id=?",
-                            (r_id,)
-                        )
-                        conn.commit()
-                        conn.close()
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "DELETE FROM reports WHERE id=?",
+                                (r_id,)
+                            )
+                            conn.commit()
                         st.rerun()
 
 # Security Dashboard
@@ -1782,12 +1834,11 @@ def security_dashboard():
         return
         
     # Check if user is admin
-    conn = sqlite3.connect("campus_connect.db")
-    is_admin = conn.execute(
-        "SELECT 1 FROM admins WHERE email=?", 
-        (st.session_state.current_user,)
-    ).fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        is_admin = conn.execute(
+            "SELECT 1 FROM admins WHERE email=?", 
+            (st.session_state.current_user,)
+        ).fetchone()
     
     if not is_admin:
         st.error("Admin access only")
@@ -1815,21 +1866,18 @@ def security_dashboard():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        conn = sqlite3.connect("campus_connect.db")
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        conn.close()
+        with get_db_connection() as conn:
+            user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         st.metric("Total Users", user_count)
     
     with col2:
-        conn = sqlite3.connect("campus_connect.db")
-        report_count = conn.execute("SELECT COUNT(*) FROM reports WHERE status='pending'").fetchone()[0]
-        conn.close()
+        with get_db_connection() as conn:
+            report_count = conn.execute("SELECT COUNT(*) FROM reports WHERE status='pending'").fetchone()[0]
         st.metric("Pending Reports", report_count)
     
     with col3:
-        conn = sqlite3.connect("campus_connect.db")
-        banned_count = conn.execute("SELECT COUNT(*) FROM users WHERE banned=1").fetchone()[0]
-        conn.close()
+        with get_db_connection() as conn:
+            banned_count = conn.execute("SELECT COUNT(*) FROM users WHERE banned=1").fetchone()[0]
         st.metric("Banned Users", banned_count)
 
 # Main App
@@ -1918,14 +1966,24 @@ def main():
         valid_email = validate_session(st.session_state.session_token)
         if not valid_email:
             st.session_state.clear()
+            st.query_params.clear()
             st.error("Session expired. Please log in again.")
             st.stop()
         elif valid_email != st.session_state.current_user:
             log_security_event("SESSION_HIJACK", 
                 f"Token mismatch: {valid_email} vs {st.session_state.current_user}")
             st.session_state.clear()
+            st.query_params.clear()
             st.error("Security violation detected. Please log in again.")
             st.stop()
+        else:
+            # Refresh session token if about to expire
+            token_data = json.loads(st.session_state.session_token.split("|")[0])
+            expires = datetime.fromisoformat(token_data["expires"])
+            if (expires - datetime.now()) < timedelta(minutes=10):
+                new_token = create_session(valid_email)
+                st.session_state.session_token = new_token
+                st.query_params["session_token"] = new_token
 
     # Navigation sidebar
     if st.session_state.current_user:
@@ -1934,15 +1992,15 @@ def main():
             st.divider()
 
             # Profile quick view
-            conn = sqlite3.connect("campus_connect.db")
-            profile = conn.execute(
-                "SELECT name, photo FROM profiles WHERE email=?",
-                (st.session_state.current_user,)
-            ).fetchone()
-            conn.close()
+            with get_db_connection() as conn:
+                profile = conn.execute(
+                    "SELECT name, photo FROM profiles WHERE email=?",
+                    (st.session_state.current_user,)
+                ).fetchone()
 
             if profile:
-                name, photo = profile
+                name = profile["name"]
+                photo = profile["photo"]
                 if photo:
                     try:
                         st.image(Image.open(io.BytesIO(photo)), width=80)
@@ -1975,12 +2033,11 @@ def main():
                 st.rerun()
                 
             # Check if user is admin
-            conn = sqlite3.connect("campus_connect.db")
-            is_admin = conn.execute(
-                "SELECT 1 FROM admins WHERE email=?", 
-                (st.session_state.current_user,)
-            ).fetchone()
-            conn.close()
+            with get_db_connection() as conn:
+                is_admin = conn.execute(
+                    "SELECT 1 FROM admins WHERE email=?", 
+                    (st.session_state.current_user,)
+                ).fetchone()
             
             if is_admin:
                 if st.button("Admin Panel"):
@@ -1997,7 +2054,7 @@ def main():
             st.divider()
             if st.button("Logout"):
                 st.session_state.clear()
-                st.experimental_set_query_params()
+                st.query_params.clear()
                 st.session_state.view = "auth"
                 st.rerun()
 
@@ -2032,47 +2089,46 @@ def main():
         auth_system()
 
     # Add sample data if database is empty
-    conn = sqlite3.connect("campus_connect.db")
-    # Insert sample data if empty
-    if not conn.execute("SELECT 1 FROM profiles").fetchone():
-        # Sample profiles
-        sample_profiles = [
-            ("123user1@example.com", "Amanda K", 21, "Female",
-             "Psychology major who loves hiking and indie music",
-             "Music, Travel, Art", b"", datetime.now(), "Relationship"),
-            ("234user2@example.com", "James L", 22, "Male",
-             "Computer Science student and football enthusiast",
-             "Sports, Gaming, Movies", b"", datetime.now(), "Friendship"),
-            ("345user3@example.com", "Priya M", 20, "Female",
-             "Art student passionate about street photography",
-             "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet"),
-            ("456user4@example.com", "Thomas O", 23, "Male",
-             "Engineering student who plays guitar and loves jazz",
-             "Music, Technology, Science", b"", datetime.now(), "Hookups"),
-            ("567user5@example.com", "Naledi P", 19, "Female",
-             "Environmental science major and vegan foodie",
-             "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship")
-        ]
+    with get_db_connection() as conn:
+        # Insert sample data if empty
+        if not conn.execute("SELECT 1 FROM profiles").fetchone():
+            # Sample profiles
+            sample_profiles = [
+                ("123user1@example.com", "Amanda K", 21, "Female",
+                 "Psychology major who loves hiking and indie music",
+                 "Music, Travel, Art", b"", datetime.now(), "Relationship"),
+                ("234user2@example.com", "James L", 22, "Male",
+                 "Computer Science student and football enthusiast",
+                 "Sports, Gaming, Movies", b"", datetime.now(), "Friendship"),
+                ("345user3@example.com", "Priya M", 20, "Female",
+                 "Art student passionate about street photography",
+                 "Art, Photography, Coffee", b"", datetime.now(), "Not sure yet"),
+                ("456user4@example.com", "Thomas O", 23, "Male",
+                 "Engineering student who plays guitar and loves jazz",
+                 "Music, Technology, Science", b"", datetime.now(), "Hookups"),
+                ("567user5@example.com", "Naledi P", 19, "Female",
+                 "Environmental science major and vegan foodie",
+                 "Nature, Cooking, Sustainability", b"", datetime.now(), "Relationship")
+            ]
 
-        # Create sample users
-        for profile in sample_profiles:
-            email = profile[0]
-            salt = bcrypt.gensalt()
-            password = "Password123"
-            peppered_password = password + PEPPER_SECRET
-            hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
+            # Create sample users
+            for profile in sample_profiles:
+                email = profile[0]
+                salt = bcrypt.gensalt()
+                password = "Password123"
+                peppered_password = password + PEPPER_SECRET
+                hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
 
-            conn.execute("INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
-                         (email, hashed_pw, salt, 1))
-            # Only insert profile if it doesn't exist
-            exists = conn.execute("SELECT 1 FROM profiles WHERE email=?", (email,)).fetchone()
-            if not exists:
-                conn.execute(
-                    "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    profile)
+                conn.execute("INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, ?)",
+                             (email, hashed_pw, salt, 1))
+                # Only insert profile if it doesn't exist
+                exists = conn.execute("SELECT 1 FROM profiles WHERE email=?", (email,)).fetchone()
+                if not exists:
+                    conn.execute(
+                        "INSERT INTO profiles (email, name, age, gender, bio, interests, photo, timestamp, intention) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        profile)
 
-        conn.commit()
-    conn.close()
+            conn.commit()
 
 if __name__ == "__main__":
     main()
