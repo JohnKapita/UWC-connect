@@ -618,13 +618,12 @@ with login_tab:
         password = st.text_input("Password", type="password")
         remember_me = st.checkbox("Remember me")
 
-        # <-- FIXED INDENT HERE
-        if st.form_submit_button("Login"):
+               if st.form_submit_button("Login"):
             # CSRF validation
             if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
                 log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
                 st.error("Security error. Please try again.")
-                return
+                st.stop()
             
             # Rate limiting
             ip = st.experimental_user.get("ip", "unknown")
@@ -642,10 +641,11 @@ with login_tab:
             if attempts["count"] >= 5:
                 st.error("Too many login attempts. Please try again later.")
                 log_security_event("RATE_LIMIT", f"Blocked IP {ip} for too many attempts")
-                return
+                st.stop()
                 
             if not is_valid_student_email(email):
                 st.error("Invalid student email format. Must start with 3 numbers")
+                st.stop()
             else:
                 with get_db_connection() as conn:
                     c = conn.cursor()
@@ -659,9 +659,10 @@ with login_tab:
                     if banned:
                         st.error("This account has been banned")
                         log_security_event("BANNED_ATTEMPT", f"Banned user tried to login: {email}")
-                        return
-                        # Add security delay to prevent timing attacks
-                        time.sleep(random.uniform(0.1, 0.3))
+                        st.stop()
+
+                    # Add security delay to prevent timing attacks
+                    time.sleep(random.uniform(0.1, 0.3))
                         
                         # Add pepper to password
                         peppered_password = password + PEPPER_SECRET
