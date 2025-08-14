@@ -605,7 +605,7 @@ def auth_system():
         st.caption("Didn't receive OTP? Check spam folder or resend.")
         return
 
-   # Normal auth tabs
+  # Normal auth tabs
 login_tab, register_tab = st.tabs(["Login", "Register"])
 
 with login_tab:
@@ -613,34 +613,41 @@ with login_tab:
         # CSRF protection
         if "csrf_token" not in st.session_state:
             st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
-        
+
+        # User inputs
         email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
         password = st.text_input("Password", type="password")
         remember_me = st.checkbox("Remember me")
-            if st.form_submit_button("Login"):
-                # CSRF validation
-                if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
-                    log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
-                    st.error("Security error. Please try again.")
-                    return
-                
-                # Rate limiting
-                ip = st.experimental_user.get("ip", "unknown")
-                now = time.time()
-                
-                if ip not in st.session_state.login_attempts:
-                    st.session_state.login_attempts[ip] = {"count": 0, "last_attempt": 0}
-                
-                attempts = st.session_state.login_attempts[ip]
-                
-                # Reset counter if last attempt was > 15 min ago
-                if now - attempts["last_attempt"] > 900:
-                    attempts["count"] = 0
-                
-                if attempts["count"] >= 5:
-                    st.error("Too many login attempts. Please try again later.")
-                    log_security_event("RATE_LIMIT", f"Blocked IP {ip} for too many attempts")
-                    return
+
+        # Submit button
+        if st.form_submit_button("Login"):
+            # CSRF validation
+            token = st.session_state.get("csrf_token")
+            if not token or st.query_params.get("csrf_token") != token:
+                log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
+                st.error("Security error. Please try again.")
+                return
+
+            # Rate limiting
+            ip = st.experimental_user.get("ip", "unknown")
+            now = time.time()
+
+            if ip not in st.session_state.login_attempts:
+                st.session_state.login_attempts[ip] = {"count": 0, "last_attempt": 0}
+
+            attempts = st.session_state.login_attempts[ip]
+
+            # Reset counter if last attempt was > 15 min ago
+            if now - attempts["last_attempt"] > 900:
+                attempts["count"] = 0
+
+            if attempts["count"] >= 5:
+                st.error("Too many login attempts. Please try again later.")
+                log_security_event("RATE_LIMIT", f"Blocked IP {ip} for too many attempts")
+                return
+
+            # Your actual login logic here
+            st.success(f"Logged in with email: {email}")
                     
                 if not is_valid_student_email(email):
                     st.error("Invalid student email format. Must start with 3 numbers")
