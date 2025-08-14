@@ -618,7 +618,7 @@ with login_tab:
         password = st.text_input("Password", type="password")
         remember_me = st.checkbox("Remember me")
 
-               if st.form_submit_button("Login"):
+        if st.form_submit_button("Login"):  # ✅ aligned properly
             # CSRF validation
             if not st.query_params.get("csrf_token") or st.query_params.get("csrf_token") != st.session_state.csrf_token:
                 log_security_event("CSRF_FAILURE", f"Invalid CSRF token from {email}")
