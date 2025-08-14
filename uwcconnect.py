@@ -608,11 +608,11 @@ def auth_system():
     # Normal auth tabs
     login_tab, register_tab = st.tabs(["Login", "Register"])
 
-   with login_tab:
+with login_tab:
     with st.form("login_form"):
         # CSRF protection
         if "csrf_token" not in st.session_state:
-            st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
+        st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
             
             email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
             password = st.text_input("Password", type="password")
