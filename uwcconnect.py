@@ -605,18 +605,18 @@ def auth_system():
         st.caption("Didn't receive OTP? Check spam folder or resend.")
         return
 
-    # Normal auth tabs
-    login_tab, register_tab = st.tabs(["Login", "Register"])
+   # Normal auth tabs
+login_tab, register_tab = st.tabs(["Login", "Register"])
 
-    with login_tab:
-        with st.form("login_form"):
-            # CSRF protection
+with login_tab:
+    with st.form("login_form"):
+        # CSRF protection
+        if "csrf_token" not in st.session_state:
             st.session_state.csrf_token = binascii.hexlify(os.urandom(16)).decode()
-            st.hidden_input("csrf_token", value=st.session_state.csrf_token)
-            
-            email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
-            password = st.text_input("Password", type="password")
-            remember_me = st.checkbox("Remember me")
+        
+        email = st.text_input("Student Email (must start with 3 numbers)", key="login_email")
+        password = st.text_input("Password", type="password")
+        remember_me = st.checkbox("Remember me")
 
             if st.form_submit_button("Login"):
                 # CSRF validation
