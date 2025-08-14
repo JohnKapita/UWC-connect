@@ -151,7 +151,9 @@ def init_database():
 
 # Initialize session state
 def init_session_state():
+    # FIX: Initialize current_user to None if not set
     if "current_user" not in st.session_state:
+        st.session_state.current_user = None
         # Check for session token in URL
         if st.query_params.get("session_token"):
             valid_email = validate_session(st.query_params.get("session_token"))
