@@ -315,13 +315,14 @@ def log_security_event(event_type, details, user=None):
     }
     logging.info(json.dumps(entry))
 
-# Email validation
+# Email validation - FIXED REGEX
 def is_valid_student_email(email):
     if not email:
         return False
     if len(email) < 3 or not email[:3].isdigit():
         return False
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    # Fixed regex to prevent double dots in domain
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$'
     return re.match(pattern, email) is not None
 
 # Generate random 6-digit OTP
@@ -465,6 +466,7 @@ def auth_system():
                     hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
 
                     with get_db_connection() as conn:
+                        # FIXED: Set verified=1 and clear OTP fields
                         conn.execute(
                             "UPDATE users SET password=?, salt=?, verified=1, otp=NULL, otp_expiry=NULL WHERE email=?",
                             (hashed_pw, salt, email)
@@ -545,8 +547,9 @@ def auth_system():
                     hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
 
                     with get_db_connection() as conn:
+                        # FIXED: Set verified=1 during password reset
                         conn.execute(
-                            "UPDATE users SET password=?, salt=? WHERE email=?",
+                            "UPDATE users SET password=?, salt=?, verified=1 WHERE email=?",
                             (hashed_pw, salt, st.session_state.temp_email)
                         )
                         conn.execute(
