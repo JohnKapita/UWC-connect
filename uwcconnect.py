@@ -1334,27 +1334,27 @@ def view_connections():
                     st.image("default_profile.png", width=80)
 
             with col2:
-    st.write(f"**{name}**")
-    # FIXED TIMESTAMP HANDLING
-    if isinstance(timestamp, str):
-        try:
-            timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            pass
+                st.write(f"**{name}**")
+                # FIXED TIMESTAMP HANDLING
+                if isinstance(timestamp, str):
+                    try:
+                        timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
 
-    if isinstance(timestamp, datetime):
-        st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
-    else:
-        st.caption(f"Connected since {timestamp}")
+                if isinstance(timestamp, datetime):
+                    st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
+                else:
+                    st.caption(f"Connected since {timestamp}")
 
-    if unread_count > 0:
-        st.caption(f"🔴 {unread_count} unread message{'s' if unread_count > 1 else ''}")
+                if unread_count > 0:
+                    st.caption(f"🔴 {unread_count} unread message{'s' if unread_count > 1 else ''}")
+
                 if st.button("Chat", key=f"chat_{conn_id}"):
                     st.session_state.current_chat = other_email
                     st.session_state.view = "chat"
                     st.rerun()
 
-                # Video call button
                 if st.button("📞 Video Call", key=f"call_{conn_id}"):
                     st.session_state.caller = st.session_state.current_user
                     st.session_state.callee = other_email
@@ -1362,14 +1362,12 @@ def view_connections():
                     st.session_state.view = "video_call"
                     st.rerun()
 
-                # Report button for connections
                 if st.button("⚠️ Report", key=f"report_{conn_id}"):
                     st.session_state.reporting_user = other_email
                     st.session_state.reporting_name = name
                     st.session_state.view = "report_user"
                     st.rerun()
 
-                # Block button for connections
                 if st.button("🚫 Block", key=f"block_{conn_id}"):
                     with get_db_connection() as conn:
                         conn.execute(
