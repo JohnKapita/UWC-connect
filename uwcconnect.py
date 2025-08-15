@@ -24,17 +24,21 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import binascii
 
-# Compatibility layer for query parameters
+# ================== FIX 1: Enhanced query parameter handling ==================
 def get_query_params():
     """Get query parameters with backward compatibility"""
     try:
-        # For Streamlit >= 1.16.0
-        return st.query_params
+        # For Streamlit >= 1.28
+        return st.query_params.to_dict()
     except AttributeError:
-        # For older versions
-        return st.experimental_get_query_params()
+        try:
+            # For Streamlit >= 1.16 but < 1.28
+            return st.query_params
+        except AttributeError:
+            # For older versions
+            return st.experimental_get_query_params()
 
-# FIX: Set page config must be the first Streamlit command
+# ================== FIX 2: Must be the first command ==================
 st.set_page_config(
     page_title="Campus Connect",
     page_icon="❤️",
@@ -174,52 +178,36 @@ def init_session_state():
         st.session_state.current_user = None
         # Check for session token in URL
         query_params = get_query_params()
-        if query_params.get("session_token"):
-            valid_email = validate_session(query_params.get("session_token"))
+        if "session_token" in query_params:
+            token = query_params["session_token"]
+            if isinstance(token, list):
+                token = token[0]  # Handle list format
+            valid_email = validate_session(token)
             if valid_email:
                 st.session_state.current_user = valid_email
-                st.session_state.session_token = query_params.get("session_token")
+                st.session_state.session_token = token
 
-    if "view" not in st.session_state:
+    # ================== FIX 3: Handle view from query parameters ==================
+    query_params = get_query_params()
+    if "view" in query_params:
+        view_value = query_params["view"]
+        if isinstance(view_value, list):
+            view_value = view_value[0]  # Handle list format
+        st.session_state.view = view_value
+    elif "view" not in st.session_state:
         st.session_state.view = "auth"
-    if "current_chat" not in st.session_state:
-        st.session_state.current_chat = None
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 0
-    if "notifications" not in st.session_state:
-        st.session_state.notifications = []
-    if "pending_verification" not in st.session_state:
-        st.session_state.pending_verification = False
-    if "temp_email" not in st.session_state:
-        st.session_state.temp_email = None
-    if "temp_password" not in st.session_state:
-        st.session_state.temp_password = None
-    if "otp_attempts" not in st.session_state:
-        st.session_state.otp_attempts = 0
-    if "resetting_password" not in st.session_state:
-        st.session_state.resetting_password = False
-    if "reporting_user" not in st.session_state:
-        st.session_state.reporting_user = None
-    if "reporting_name" not in st.session_state:
-        st.session_state.reporting_name = None
-    if "profiles_cache" not in st.session_state:
-        st.session_state.profiles_cache = None
-    if "cache_timestamp" not in st.session_state:
-        st.session_state.cache_timestamp = None
-    if "swipe_x" not in st.session_state:
-        st.session_state.swipe_x = 0
-    if "swipe_y" not in st.session_state:
-        st.session_state.swipe_y = 0
-    if "swipe_start" not in st.session_state:
-        st.session_state.swipe_start = None
-    if "swipe_action" not in st.session_state:
-        st.session_state.swipe_action = None
-    if "reset_otp_verification" not in st.session_state:
-        st.session_state.reset_otp_verification = False
-    if "reset_otp_attempts" not in st.session_state:
-        st.session_state.reset_otp_attempts = 0
-    if "temp_reset_email" not in st.session_state:
-        st.session_state.temp_reset_email = None
+    
+    # Initialize other session state variables
+    for state_var in ["current_chat", "current_index", "pending_verification", 
+                     "temp_email", "temp_password", "otp_attempts", "resetting_password",
+                     "reporting_user", "reporting_name", "profiles_cache", "cache_timestamp",
+                     "swipe_x", "swipe_y", "swipe_start", "swipe_action", "reset_otp_verification",
+                     "reset_otp_attempts", "temp_reset_email", "call_state", "caller",
+                     "callee", "current_call", "session_token", "unread_messages",
+                     "sidebar_expanded"]:
+        if state_var not in st.session_state:
+            st.session_state[state_var] = None if state_var != "current_index" else 0
+    
     if "form_errors" not in st.session_state:
         st.session_state.form_errors = {
             "name": False,
@@ -227,20 +215,15 @@ def init_session_state():
             "interests": False,
             "photo": False
         }
-    if "call_state" not in st.session_state:
-        st.session_state.call_state = None
-    if "caller" not in st.session_state:
-        st.session_state.caller = None
-    if "callee" not in st.session_state:
-        st.session_state.callee = None
-    if "current_call" not in st.session_state:
-        st.session_state.current_call = None
+    
+    if "notifications" not in st.session_state:
+        st.session_state.notifications = []
+    
     if "login_attempts" not in st.session_state:
         st.session_state.login_attempts = {}
-    if "session_token" not in st.session_state:
-        st.session_state.session_token = None
-    if "unread_messages" not in st.session_state:
-        st.session_state.unread_messages = 0
+    
+    if "rate_limits" not in st.session_state:
+        st.session_state.rate_limits = {}
 
 # Security functions
 def encrypt_data(data):
@@ -330,6 +313,46 @@ def is_valid_student_email(email):
 # Generate random 6-digit OTP
 def generate_otp():
     return str(random.randint(100000, 999999))
+
+# Rate limiting function
+def rate_limit(action_key, limit=5, period=60):
+    """Enhance rate limiting with persistent counters"""
+    ip = st.experimental_user.get("ip", "unknown")
+    key = f"{action_key}_{ip}"
+    now = time.time()
+    
+    # Initialize if not exists
+    if key not in st.session_state.rate_limits:
+        st.session_state.rate_limits[key] = {"count": 0, "timestamp": now}
+    
+    # Reset if period expired
+    if now - st.session_state.rate_limits[key]["timestamp"] > period:
+        st.session_state.rate_limits[key] = {"count": 0, "timestamp": now}
+    
+    # Check limit
+    if st.session_state.rate_limits[key]["count"] >= limit:
+        log_security_event("RATE_LIMIT", f"Action: {action_key}, IP: {ip}")
+        return True
+    
+    # Increment count
+    st.session_state.rate_limits[key]["count"] += 1
+    return False
+
+# Password strength checker
+def check_password_strength(password):
+    """Check password strength and return score (0-4)"""
+    score = 0
+    if len(password) >= 8:
+        score += 1
+    if re.search(r"[A-Z]", password):
+        score += 1
+    if re.search(r"[a-z]", password):
+        score += 1
+    if re.search(r"\d", password):
+        score += 1
+    if re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        score += 1
+    return score
 
 # Email functions
 def send_otp_email(receiver_email, otp):
@@ -500,6 +523,11 @@ def auth_system():
 
         with col2:
             if st.button("Resend OTP"):
+                # Rate limit resend OTP
+                if rate_limit("resend_otp", limit=3, period=300):
+                    st.error("Too many resend attempts. Please try again later.")
+                    return
+                
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
@@ -534,8 +562,18 @@ def auth_system():
         st.subheader("Create New Password")
 
         with st.form("reset_password_form"):
-            new_password = st.text_input("New Password (min 8 characters)", type="password")
+            new_password = st.text_input("New Password (min 8 characters)", type="password", key="new_pass_reset")
             confirm_password = st.text_input("Confirm Password", type="password")
+
+            # Password strength indicator
+            if new_password:
+                strength = check_password_strength(new_password)
+                strength_labels = ["Very Weak", "Weak", "Medium", "Strong", "Very Strong"]
+                colors = ["#ff4b4b", "#ffa500", "#ffff00", "#adff2f", "#008000"]
+                
+                st.progress(strength/5)
+                st.caption(f"Password strength: **<span style='color:{colors[strength]}'>{strength_labels[strength]}</span>**", 
+                          unsafe_allow_html=True)
 
             if st.form_submit_button("Reset Password"):
                 if len(new_password) < 8:
@@ -601,6 +639,11 @@ def auth_system():
 
         with col2:
             if st.button("Resend OTP", key="resend_reset_otp"):
+                # Rate limit resend OTP
+                if rate_limit("resend_reset_otp", limit=3, period=300):
+                    st.error("Too many resend attempts. Please try again later.")
+                    return
+                
                 new_otp = generate_otp()
                 expiry = datetime.now() + timedelta(minutes=10)
 
@@ -640,23 +683,10 @@ def auth_system():
 
             if st.form_submit_button("Login"):
                 # Rate limiting
-                ip = st.experimental_user.get("ip", "unknown")
-                now = time.time()
-
-                if ip not in st.session_state.login_attempts:
-                    st.session_state.login_attempts[ip] = {"count": 0, "last_attempt": 0}
-
-                attempts = st.session_state.login_attempts[ip]
-
-                # Reset counter if last attempt was > 15 min ago
-                if now - attempts["last_attempt"] > 900:
-                    attempts["count"] = 0
-
-                if attempts["count"] >= 5:
+                if rate_limit("login_attempt", limit=5, period=300):
                     st.error("Too many login attempts. Please try again later.")
-                    log_security_event("RATE_LIMIT", f"Blocked IP {ip} for too many attempts")
-                    st.stop()
-
+                    return
+                
                 if not is_valid_student_email(email):
                     st.error("Invalid student email format. Must start with 3 numbers")
                     st.stop()
@@ -702,9 +732,6 @@ def auth_system():
                                     st.rerun()
                             else:
                                 st.error("Incorrect password")
-                                attempts["count"] += 1
-                                attempts["last_attempt"] = now
-                                st.session_state.login_attempts[ip] = attempts
                                 log_security_event("LOGIN_FAILURE", f"Failed login for {email}")
                         except TypeError as e:
                             st.error(f"Authentication error: {str(e)}")
@@ -720,10 +747,35 @@ def auth_system():
     with register_tab:
         with st.form("register_form"):
             email = st.text_input("Student Email (must start with 3 numbers)", key="register_email")
-            password = st.text_input("Create Password (min 8 characters)", type="password")
+            password = st.text_input("Create Password (min 8 characters)", type="password", key="reg_pass")
             confirm_password = st.text_input("Confirm Password", type="password")
 
+            # Password strength indicator
+            if password:
+                strength = check_password_strength(password)
+                strength_labels = ["Very Weak", "Weak", "Medium", "Strong", "Very Strong"]
+                colors = ["#ff4b4b", "#ffa500", "#ffff00", "#adff2f", "#008000"]
+                
+                st.progress(strength/5)
+                st.caption(f"Password strength: **<span style='color:{colors[strength]}'>{strength_labels[strength]}</span>**", 
+                          unsafe_allow_html=True)
+
+            # Privacy policy link
+            st.markdown("""
+                <div style="font-size: 0.8em; margin-top: 10px;">
+                    By registering, you agree to our 
+                    <a href="#" onclick="window.location.href='?view=privacy_policy'; return false;">Privacy Policy</a>
+                    and 
+                    <a href="#" onclick="window.location.href='?view=terms'; return false;">Terms of Service</a>
+                </div>
+            """, unsafe_allow_html=True)
+
             if st.form_submit_button("Register"):
+                # Rate limiting
+                if rate_limit("registration", limit=3, period=600):
+                    st.error("Too many registration attempts. Please try again later.")
+                    return
+                
                 if not is_valid_student_email(email):
                     st.error("Invalid student email format. Must start with 3 numbers")
                 elif len(password) < 8:
@@ -764,8 +816,6 @@ def auth_system():
                         else:
                             st.error("Failed to send OTP. Please try again.")
 
-        st.caption("By registering, you agree to our Terms of Service and Privacy Policy")
-
 # Forgot Password Screen
 def forgot_password():
     st.title("Reset Password")
@@ -775,6 +825,11 @@ def forgot_password():
         email = st.text_input("Student Email (must start with 3 numbers)")
 
         if st.form_submit_button("Send Reset Code"):
+            # Rate limiting
+            if rate_limit("forgot_password", limit=3, period=600):
+                st.error("Too many password reset attempts. Please try again later.")
+                return
+                
             if not is_valid_student_email(email):
                 st.error("Invalid student email format. Must start with 3 numbers")
             else:
@@ -904,32 +959,33 @@ def create_profile():
                     st.error("Photo exceeds 10MB size limit")
                     st.stop()
 
-                with get_db_connection() as conn:
-                    # Check if profile exists again to prevent race condition
-                    exists = conn.execute(
-                        "SELECT 1 FROM profiles WHERE email=?",
-                        (st.session_state.current_user,)
-                    ).fetchone()
+                with st.spinner("Saving your profile..."):
+                    with get_db_connection() as conn:
+                        # Check if profile exists again to prevent race condition
+                        exists = conn.execute(
+                            "SELECT 1 FROM profiles WHERE email=?",
+                            (st.session_state.current_user,)
+                        ).fetchone()
 
-                    if exists:
-                        st.warning("Profile already exists. Redirecting to edit page...")
-                        st.session_state.view = "edit_profile"
-                        time.sleep(1)
-                        st.rerun()
+                        if exists:
+                            st.warning("Profile already exists. Redirecting to edit page...")
+                            st.session_state.view = "edit_profile"
+                            time.sleep(1)
+                            st.rerun()
 
-                    conn.execute('''INSERT INTO profiles
-                                        (email, name, age, gender, bio, interests, photo, timestamp, intention)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                                 (st.session_state.current_user,
-                                  sanitize_input(name),
-                                  age,
-                                  sanitize_input(gender),
-                                  sanitize_input(bio),
-                                  sanitize_input(", ".join(interests)),
-                                  photo_data,
-                                  datetime.now(),
-                                  sanitize_input(intention)))
-                    conn.commit()
+                        conn.execute('''INSERT INTO profiles
+                                            (email, name, age, gender, bio, interests, photo, timestamp, intention)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                     (st.session_state.current_user,
+                                      sanitize_input(name),
+                                      age,
+                                      sanitize_input(gender),
+                                      sanitize_input(bio),
+                                      sanitize_input(", ".join(interests)),
+                                      photo_data,
+                                      datetime.now(),
+                                      sanitize_input(intention)))
+                        conn.commit()
 
                 st.success("Profile created successfully!")
                 st.session_state.view = "discover"
@@ -976,9 +1032,9 @@ def edit_profile():
         # Show current photo if exists
         if profile["photo"]:
             try:
-                st.image(Image.open(io.BytesIO(profile["photo"])), width=150, caption="Current Photo")
+                st.image(Image.open(io.BytesIO(profile["photo"])), width=150, caption="Current Photo", use_column_width=False)
             except:
-                st.image("default_profile.png", width=150, caption="Current Photo")
+                st.image("default_profile.png", width=150, caption="Current Photo", use_column_width=False)
 
         photo = st.file_uploader("Update Profile Photo (max 10MB, leave empty to keep current)",
                                  type=["jpg", "png", "jpeg"],
@@ -1012,25 +1068,26 @@ def edit_profile():
                     else:
                         photo_data = photo.read()
 
-                with get_db_connection() as conn:
-                    conn.execute('''UPDATE profiles
-                                    SET name=?,
-                                        age=?,
-                                        gender=?,
-                                        bio=?,
-                                        interests=?,
-                                        photo=?,
-                                        intention=?
-                                    WHERE email = ?''',
-                                 (sanitize_input(name),
-                                  age,
-                                  sanitize_input(gender),
-                                  sanitize_input(bio),
-                                  sanitize_input(", ".join(interests)),
-                                  photo_data,
-                                  sanitize_input(intention),
-                                  st.session_state.current_user))
-                    conn.commit()
+                with st.spinner("Updating profile..."):
+                    with get_db_connection() as conn:
+                        conn.execute('''UPDATE profiles
+                                        SET name=?,
+                                            age=?,
+                                            gender=?,
+                                            bio=?,
+                                            interests=?,
+                                            photo=?,
+                                            intention=?
+                                        WHERE email = ?''',
+                                     (sanitize_input(name),
+                                      age,
+                                      sanitize_input(gender),
+                                      sanitize_input(bio),
+                                      sanitize_input(", ".join(interests)),
+                                      photo_data,
+                                      sanitize_input(intention),
+                                      st.session_state.current_user))
+                        conn.commit()
 
                 st.success("Profile updated successfully!")
                 st.session_state.view = "discover"
@@ -1120,11 +1177,11 @@ def discover_profiles():
                     # Display photo
                     if photo:
                         try:
-                            st.image(Image.open(io.BytesIO(photo)), width=250, caption=f"{name}, {age}")
+                            st.image(Image.open(io.BytesIO(photo)), width=250, caption=f"{name}, {age}", use_column_width=False)
                         except:
-                            st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                            st.image("default_profile.png", width=250, caption=f"{name}, {age}", use_column_width=False)
                     else:
-                        st.image("default_profile.png", width=250, caption=f"{name}, {age}")
+                        st.image("default_profile.png", width=250, caption=f"{name}, {age}", use_column_width=False)
 
                     # Profile info
                     st.caption(f"{gender} • Looking for: {intention}")
@@ -1226,11 +1283,11 @@ def view_connections():
             with col1:
                 if photo:
                     try:
-                        st.image(Image.open(io.BytesIO(photo)), width=80)
+                        st.image(Image.open(io.BytesIO(photo)), width=80, use_column_width=False)
                     except:
-                        st.image("default_profile.png", width=80)
+                        st.image("default_profile.png", width=80, use_column_width=False)
                 else:
-                    st.image("default_profile.png", width=80)
+                    st.image("default_profile.png", width=80, use_column_width=False)
 
             with col2:
                 st.write(f"**{name}** wants to connect with you")
@@ -1329,11 +1386,11 @@ def view_connections():
             with col1:
                 if photo:
                     try:
-                        st.image(Image.open(io.BytesIO(photo)), width=80)
+                        st.image(Image.open(io.BytesIO(photo)), width=80, use_column_width=False)
                     except:
-                        st.image("default_profile.png", width=80)
+                        st.image("default_profile.png", width=80, use_column_width=False)
                 else:
-                    st.image("default_profile.png", width=80)
+                    st.image("default_profile.png", width=80, use_column_width=False)
 
             with col2:
                 st.write(f"**{name}**")
@@ -1525,15 +1582,16 @@ def chat_interface():
     # Message input
     if prompt := st.chat_input("Type a message..."):
         # Add message to database
-        with get_db_connection() as conn:
-            conn.execute(
-                '''INSERT INTO messages
-                       (id, chat_id, sender, receiver, message, time, read)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (str(uuid4()), chat_id, current_user, other_user,
-                 prompt, datetime.now(), 0)
-            )
-            conn.commit()
+        with st.spinner("Sending..."):
+            with get_db_connection() as conn:
+                conn.execute(
+                    '''INSERT INTO messages
+                           (id, chat_id, sender, receiver, message, time, read)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    (str(uuid4()), chat_id, current_user, other_user,
+                     prompt, datetime.now(), 0)
+                )
+                conn.commit()
         st.rerun()
 
 # Messages Inbox
@@ -1631,11 +1689,11 @@ def messages_inbox():
             with col1:
                 if photo:
                     try:
-                        st.image(Image.open(io.BytesIO(photo)), width=60)
+                        st.image(Image.open(io.BytesIO(photo)), width=60, use_column_width=False)
                     except:
-                        st.image("default_profile.png", width=60)
+                        st.image("default_profile.png", width=60, use_column_width=False)
                 else:
-                    st.image("default_profile.png", width=60)
+                    st.image("default_profile.png", width=60, use_column_width=False)
                     
             with col2:
                 st.subheader(name)
@@ -1778,26 +1836,34 @@ def delete_account():
                     salt = result["salt"]
                     peppered_password = password + PEPPER_SECRET
                     if bcrypt.hashpw(peppered_password.encode(), salt) == hashed_pw:
-                        # Delete all user data
-                        with get_db_connection() as conn:
-                            conn.execute("DELETE FROM users WHERE email=?",
-                                         (st.session_state.current_user,))
-                            conn.execute("DELETE FROM profiles WHERE email=?",
-                                         (st.session_state.current_user,))
-                            conn.execute("DELETE FROM connections WHERE from_email=? OR to_email=?",
-                                         (st.session_state.current_user, st.session_state.current_user))
-                            conn.execute("DELETE FROM messages WHERE sender=? OR receiver=?",
-                                         (st.session_state.current_user, st.session_state.current_user))
-                            conn.commit()
+                        # Enhanced confirmation
+                        with st.expander("Confirm Account Deletion", expanded=True):
+                            st.error("THIS ACTION IS PERMANENT AND CANNOT BE UNDONE!")
+                            st.write("All your data will be immediately and permanently deleted")
+                            confirmation = st.text_input("Type 'DELETE MY ACCOUNT' to confirm")
+                            
+                            if confirmation == "DELETE MY ACCOUNT":
+                                # Delete all user data
+                                with st.spinner("Deleting account..."):
+                                    with get_db_connection() as conn:
+                                        conn.execute("DELETE FROM users WHERE email=?",
+                                                     (st.session_state.current_user,))
+                                        conn.execute("DELETE FROM profiles WHERE email=?",
+                                                     (st.session_state.current_user,))
+                                        conn.execute("DELETE FROM connections WHERE from_email=? OR to_email=?",
+                                                     (st.session_state.current_user, st.session_state.current_user))
+                                        conn.execute("DELETE FROM messages WHERE sender=? OR receiver=?",
+                                                     (st.session_state.current_user, st.session_state.current_user))
+                                        conn.commit()
 
-                        st.success("Account deleted successfully")
-                        st.session_state.clear()
-                        # Clear query params
-                        query_params = get_query_params()
-                        query_params.clear()
-                        st.session_state.view = "auth"
-                        time.sleep(2)
-                        st.rerun()
+                                st.success("Account deleted successfully")
+                                st.session_state.clear()
+                                # Clear query params
+                                query_params = get_query_params()
+                                query_params.clear()
+                                st.session_state.view = "auth"
+                                time.sleep(2)
+                                st.rerun()
                     else:
                         st.error("Incorrect password")
                 else:
@@ -1996,12 +2062,203 @@ def security_dashboard():
             banned_count = conn.execute("SELECT COUNT(*) FROM users WHERE banned=1").fetchone()[0]
         st.metric("Banned Users", banned_count)
 
+# Privacy Policy
+def privacy_policy():
+    st.title("Privacy Policy")
+    st.markdown("""
+    ## Data Collection
+    We collect only necessary information for platform functionality:
+    - Student email addresses
+    - Profile information you provide
+    - Connection and messaging data
+    
+    ## Data Usage
+    Your data is used solely for:
+    - Facilitating connections between students
+    - Personalizing your experience
+    - Platform security and integrity
+    
+    ## Data Protection
+    We implement:
+    - End-to-end encryption for messages
+    - Secure password storage
+    - Regular security audits
+    
+    ## Data Retention
+    We retain your data only as long as your account is active. 
+    You can delete your account at any time, which permanently removes all your data.
+    
+    ## Contact
+    For privacy concerns, contact: privacy@campusconnect.edu
+    """)
+    
+    if st.button("Back to App"):
+        st.session_state.view = "discover"
+
+# Terms of Service
+def terms_of_service():
+    st.title("Terms of Service")
+    st.markdown("""
+    ## Acceptance of Terms
+    By using Campus Connect, you agree to these Terms of Service.
+    
+    ## User Responsibilities
+    You agree to:
+    - Provide accurate information
+    - Respect other users
+    - Comply with your institution's code of conduct
+    - Not engage in harassment or inappropriate behavior
+    
+    ## Prohibited Activities
+    You may not:
+    - Create fake profiles
+    - Spam other users
+    - Share illegal content
+    - Attempt to compromise platform security
+    
+    ## Account Termination
+    We reserve the right to terminate accounts that violate these terms.
+    
+    ## Limitation of Liability
+    Campus Connect is provided "as is" without warranties of any kind.
+    
+    ## Changes to Terms
+    We may update these terms; continued use constitutes acceptance.
+    """)
+    
+    if st.button("Back to App"):
+        st.session_state.view = "discover"
+
+# Cookie Consent Banner
+def cookie_consent():
+    if "cookie_consent" not in st.session_state:
+        st.session_state.cookie_consent = None
+        
+    if st.session_state.cookie_consent is None:
+        with st.container():
+            st.markdown("""
+            <style>
+            .cookie-banner {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                width: 100%;
+                background-color: #1a1d24;
+                padding: 15px;
+                z-index: 1000;
+                border-top: 1px solid #2d3039;
+            }
+            .cookie-btn {
+                background-color: #4a4e69;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                margin: 0 5px;
+            }
+            </style>
+            <div class="cookie-banner">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        We use cookies to enhance your experience. By continuing, you consent to our use of cookies.
+                    </div>
+                    <div>
+                        <button class="cookie-btn" onclick="window.location.href='?cookie_accept=1'">Accept</button>
+                        <button class="cookie-btn" onclick="window.location.href='?cookie_reject=1'">Reject</button>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        query_params = get_query_params()
+        if "cookie_accept" in query_params:
+            st.session_state.cookie_consent = True
+            st.rerun()
+        elif "cookie_reject" in query_params:
+            st.session_state.cookie_consent = True
+            st.rerun()
+
+# ================== FIX 4: Create fake profiles ==================
+def create_fake_profiles():
+    """Generate fake profiles for testing"""
+    fake_names = [
+        "Emma Johnson", "Liam Smith", "Olivia Williams", "Noah Brown", "Ava Jones",
+        "William Garcia", "Isabella Miller", "James Davis", "Sophia Rodriguez", "Benjamin Wilson"
+    ]
+    
+    fake_bios = [
+        "Computer science major who loves hiking and photography",
+        "Art student passionate about painting and digital art",
+        "Biology major interested in marine life and conservation",
+        "Business student with a focus on entrepreneurship",
+        "Music composition major who plays three instruments",
+        "Psychology student researching cognitive behavior",
+        "Engineering major building robots in spare time",
+        "Literature student who writes poetry and short stories",
+        "Economics major with interest in sustainable development",
+        "Architecture student who loves modernist design"
+    ]
+    
+    fake_interests = [
+        ["Sports", "Gaming", "Movies"],
+        ["Art", "Travel", "Food"],
+        ["Academics", "Science", "Travel"],
+        ["Business", "Networking", "Sports"],
+        ["Music", "Dancing", "Art"],
+        ["Psychology", "Reading", "Movies"],
+        ["Technology", "Gaming", "Sports"],
+        ["Literature", "Writing", "Art"],
+        ["Economics", "Politics", "Travel"],
+        ["Design", "Architecture", "Art"]
+    ]
+    
+    with st.spinner("Creating fake profiles..."):
+        with get_db_connection() as conn:
+            for i in range(10):
+                email = f"{random.randint(100, 999)}{fake_names[i].split()[0].lower()}@university.edu"
+                
+                # Check if profile already exists
+                exists = conn.execute(
+                    "SELECT 1 FROM profiles WHERE email=?",
+                    (email,)
+                ).fetchone()
+                
+                if not exists:
+                    # Create user account
+                    salt = bcrypt.gensalt()
+                    password = "password123"
+                    peppered_password = password + PEPPER_SECRET
+                    hashed_pw = bcrypt.hashpw(peppered_password.encode(), salt)
+                    
+                    conn.execute(
+                        "INSERT OR IGNORE INTO users (email, password, salt, verified) VALUES (?, ?, ?, 1)",
+                        (email, hashed_pw, salt)
+                    )
+                    
+                    # Create profile
+                    conn.execute(
+                        '''INSERT INTO profiles 
+                        (email, name, age, gender, bio, interests, timestamp, intention)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (email, 
+                         fake_names[i],
+                         random.randint(18, 25),
+                         random.choice(["Male", "Female"]),
+                         fake_bios[i],
+                         ", ".join(fake_interests[i]),
+                         datetime.now() - timedelta(days=random.randint(1, 365)),
+                         random.choice(["Friendship", "Relationship", "Not sure yet"]))
+                    )
+            conn.commit()
+    st.success("Created 10 fake profiles for testing!")
+
 # Main App
 def main():
     # Set session lifetime to 1 day (prevents logout when screen off)
     st.session_state.setdefault('server.maxSessionAge', 86400)
 
-    # Apply dark theme
+    # Apply dark theme with accessibility improvements
     st.markdown("""
     <style>
     [data-testid="stAppViewContainer"] {
@@ -2071,6 +2328,8 @@ def main():
         padding: 15px 0;
         border-bottom: 1px solid #2d3039;
         margin-bottom: 20px;
+        font-size: 1.5rem;
+        font-weight: bold;
     }
     .sidebar-item {
         padding: 12px 20px;
@@ -2103,11 +2362,63 @@ def main():
         font-size: 0.8em;
         margin-left: auto;
     }
+    
+    /* Accessibility improvements */
+    [data-testid="stImage"] > img {
+        border: 1px solid #3a3e59;
+    }
+    
+    /* Menu toggle button */
+    .menu-toggle {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 1001;
+        background: #1a1d24;
+        border: 1px solid #2d3039;
+        border-radius: 4px;
+        padding: 8px;
+        cursor: pointer;
+        font-size: 1.2rem;
+    }
+    .sidebar-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100vh;
+        width: 300px;
+        background-color: #0e1117;
+        z-index: 1000;
+        padding: 20px;
+        overflow-y: auto;
+        transform: translateX(-100%);
+        transition: transform 0.3s ease;
+    }
+    .sidebar-container.expanded {
+        transform: translateX(0);
+    }
+    .sidebar-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.5);
+        z-index: 999;
+        display: none;
+    }
+    .sidebar-overlay.visible {
+        display: block;
+    }
     </style>
     """, unsafe_allow_html=True)
 
+    # Initialize app components
     init_database()
     init_session_state()
+    
+    # Show cookie consent
+    cookie_consent()
 
     # Session validation
     if st.session_state.get("session_token"):
@@ -2139,85 +2450,138 @@ def main():
                 query_params["session_token"] = new_token
 
     # Navigation sidebar
+    st.markdown(f"""
+        <div class="menu-toggle" onclick="toggleSidebar()">☰</div>
+        <div class="sidebar-overlay {'visible' if st.session_state.sidebar_expanded else ''}" onclick="toggleSidebar()"></div>
+        <div class="sidebar-container {'expanded' if st.session_state.sidebar_expanded else ''}">
+            <div class="sidebar-header">MENU</div>
+    """, unsafe_allow_html=True)
+    
     if st.session_state.current_user:
-        with st.sidebar:
-            # Enhanced sidebar header
-            st.markdown('<div class="sidebar-header">', unsafe_allow_html=True)
-            st.subheader("Campus Connect")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Profile quick view
-            with get_db_connection() as conn:
-                profile = conn.execute(
-                    "SELECT name, photo FROM profiles WHERE email=?",
-                    (st.session_state.current_user,)
-                ).fetchone()
+        # Profile quick view
+        with get_db_connection() as conn:
+            profile = conn.execute(
+                "SELECT name, photo FROM profiles WHERE email=?",
+                (st.session_state.current_user,)
+            ).fetchone()
 
-            if profile:
-                name = profile["name"]
-                photo = profile["photo"]
-                if photo:
-                    try:
-                        st.image(Image.open(io.BytesIO(photo)), width=100, caption=name)
-                    except:
-                        st.image("default_profile.png", width=100, caption=name)
-                else:
-                    st.image("default_profile.png", width=100, caption=name)
-            
-            # Calculate unread messages count
-            with get_db_connection() as conn:
-                unread_count = conn.execute(
-                    '''SELECT COUNT(*) 
-                    FROM messages 
-                    WHERE receiver = ? 
-                    AND read = 0''',
-                    (st.session_state.current_user,)
-                ).fetchone()[0]
-                st.session_state.unread_messages = unread_count
+        if profile:
+            name = profile["name"]
+            photo = profile["photo"]
+            if photo:
+                try:
+                    st.image(Image.open(io.BytesIO(photo)), width=100, caption=name, use_column_width=False)
+                except:
+                    st.image("default_profile.png", width=100, caption=name, use_column_width=False)
+            else:
+                st.image("default_profile.png", width=100, caption=name, use_column_width=False)
+        
+        # Calculate unread messages count
+        with get_db_connection() as conn:
+            unread_count = conn.execute(
+                '''SELECT COUNT(*) 
+                FROM messages 
+                WHERE receiver = ? 
+                AND read = 0''',
+                (st.session_state.current_user,)
+            ).fetchone()[0]
+            st.session_state.unread_messages = unread_count
 
-            # Enhanced navigation with icons
-            nav_items = [
-                {"label": "Discover People", "icon": "🔍", "view": "discover"},
-                {"label": "My Connections", "icon": "🤝", "view": "connections"},
-                {"label": "Messages", "icon": "💬", "view": "messages_inbox", "badge": unread_count},
-                {"label": "Notifications", "icon": "🔔", "view": "notifications"},
-                {"label": "Edit Profile", "icon": "✏️", "view": "edit_profile"},
-            ]
+        # Enhanced navigation with icons
+        nav_items = [
+            {"label": "Discover People", "icon": "🔍", "view": "discover"},
+            {"label": "My Connections", "icon": "🤝", "view": "connections"},
+            {"label": "Messages", "icon": "💬", "view": "messages_inbox", "badge": unread_count},
+            {"label": "Notifications", "icon": "🔔", "view": "notifications"},
+            {"label": "Edit Profile", "icon": "✏️", "view": "edit_profile"},
+        ]
+        
+        # Admin items
+        with get_db_connection() as conn:
+            is_admin = conn.execute(
+                "SELECT 1 FROM admins WHERE email=?",
+                (st.session_state.current_user,)
+            ).fetchone()
             
-            # Admin items
-            with get_db_connection() as conn:
-                is_admin = conn.execute(
-                    "SELECT 1 FROM admins WHERE email=?",
-                    (st.session_state.current_user,)
-                ).fetchone()
-                
-            if is_admin:
-                nav_items.extend([
-                    {"label": "Admin Panel", "icon": "⚙️", "view": "admin"},
-                    {"label": "Security Dashboard", "icon": "🛡️", "view": "security_dashboard"}
-                ])
-                
+        if is_admin:
             nav_items.extend([
-                {"label": "Delete Account", "icon": "⚠️", "view": "delete_account"},
-                {"label": "Logout", "icon": "🚪", "view": "auth"}
+                {"label": "Admin Panel", "icon": "⚙️", "view": "admin"},
+                {"label": "Security Dashboard", "icon": "🛡️", "view": "security_dashboard"}
             ])
             
-            # Render navigation items
-            for item in nav_items:
-                active = "active" if st.session_state.view == item["view"] else ""
-                badge = ""
+        nav_items.extend([
+            {"label": "Privacy Policy", "icon": "📜", "view": "privacy_policy"},
+            {"label": "Terms of Service", "icon": "📝", "view": "terms"},
+            {"label": "Delete Account", "icon": "⚠️", "view": "delete_account"},
+            {"label": "Logout", "icon": "🚪", "view": "auth"}
+        ])
+        
+        # Render navigation items
+        for item in nav_items:
+            active = "active" if st.session_state.view == item["view"] else ""
+            badge = ""
+            
+            if "badge" in item and item["badge"] > 0:
+                badge = f'<span class="unread-badge">{item["badge"]}</span>'
                 
-                if "badge" in item and item["badge"] > 0:
-                    badge = f'<span class="unread-badge">{item["badge"]}</span>'
-                    
-                html = f'''
-                <div class="sidebar-item {active}" onclick="window.location.href='?view={item["view"]}'">
-                    <span class="sidebar-icon">{item["icon"]}</span>
-                    <span>{item["label"]}</span>
-                    {badge}
-                </div>
-                '''
-                st.markdown(html, unsafe_allow_html=True)
+            html = f'''
+            <div class="sidebar-item {active}" onclick="window.location.href='?view={item["view"]}'">
+                <span class="sidebar-icon">{item["icon"]}</span>
+                <span>{item["label"]}</span>
+                {badge}
+            </div>
+            '''
+            st.markdown(html, unsafe_allow_html=True)
+            
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Add JavaScript for sidebar toggle
+    st.markdown("""
+    <script>
+    function toggleSidebar() {
+        const sidebar = document.querySelector('.sidebar-container');
+        const overlay = document.querySelector('.sidebar-overlay');
+        
+        if (sidebar.classList.contains('expanded')) {
+            sidebar.classList.remove('expanded');
+            overlay.classList.remove('visible');
+        } else {
+            sidebar.classList.add('expanded');
+            overlay.classList.add('visible');
+        }
+        
+        // Update session state
+        const expanded = sidebar.classList.contains('expanded');
+        fetch('/_stcore/stream', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                'sidebar_expanded': expanded
+            })
+        });
+    }
+    
+    // Initialize sidebar state
+    document.addEventListener('DOMContentLoaded', function() {
+        const sidebar = document.querySelector('.sidebar-container');
+        const overlay = document.querySelector('.sidebar-overlay');
+        const expanded = %s;
+        
+        if (expanded) {
+            sidebar.classList.add('expanded');
+            overlay.classList.add('visible');
+        }
+    });
+    </script>
+    """ % str(st.session_state.sidebar_expanded).lower(), unsafe_allow_html=True)
+
+    # ================== FIX 5: Added fake profiles creation button ==================
+    if st.session_state.current_user and st.session_state.get("is_admin", False):
+        if st.button("Create Fake Profiles (Admin Only)"):
+            create_fake_profiles()
+            st.rerun()
 
     # Main view routing
     if st.session_state.view == "auth":
@@ -2248,6 +2612,10 @@ def main():
         security_dashboard()
     elif st.session_state.view == "messages_inbox":
         messages_inbox()
+    elif st.session_state.view == "privacy_policy":
+        privacy_policy()
+    elif st.session_state.view == "terms":
+        terms_of_service()
 
 if __name__ == "__main__":
     main()
