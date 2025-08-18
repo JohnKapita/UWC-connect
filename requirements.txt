@@ -1,21 +1,14 @@
-# Core dependencies
 streamlit==1.36.0
 pandas==2.2.2
 Pillow==10.4.0
 bcrypt==4.1.2
 python-dotenv==1.0.0
 packaging==23.2
-
-# Crypto and security
 cryptography==42.0.5
 pyotp==2.9.0
 cffi==1.16.0
-
-# Database and utilities
 sqlalchemy==2.0.30
 pyopenssl==24.1.0
-
-# Render-specific dependencies
 gunicorn==22.0.0
 watchdog==4.0.1
 pyarrow==16.1.0
