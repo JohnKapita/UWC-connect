@@ -1,4 +1,15 @@
-import streamlit as st
+import os
+import signal
+import sys
+
+# Render deployment fix
+port = int(os.environ.get("PORT", 8501))
+
+# Graceful shutdown handler
+def handle_sigterm(signum, frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_sigterm)import streamlit as st
 import pandas as pd
 import random
 import base64
@@ -919,7 +930,7 @@ def create_profile():
                              index=3)
 
         # Photo uploader with validation
-        photo_label = "Profile Photo (max 10MB)*"
+        photo_label = "Profile Photo (max 2MB)*"
         if st.session_state.form_errors.get("photo", False):
             photo_label = f":red[{photo_label}]"
         photo = st.file_uploader(photo_label, type=["jpg", "png", "jpeg"],
@@ -956,7 +967,7 @@ def create_profile():
                 # Read and verify photo (10MB limit)
                 photo_data = photo.read()
                 if len(photo_data) > 10 * 1024 * 1024:
-                    st.error("Photo exceeds 10MB size limit")
+                    st.error("Photo exceeds 2MB size limit")
                     st.stop()
 
                 with st.spinner("Saving your profile..."):
@@ -1018,7 +1029,7 @@ def edit_profile():
 
     with st.form("edit_profile_form"):
         name = st.text_input("Full Name", value=profile["name"])
-        age = st.slider("Age", 18, 30, value=profile["age"])
+        age = st.slider("Age", 18, 40, value=profile["age"])
         gender = st.selectbox("Gender",
                               ["Male", "Female", "Non-binary", "Prefer not to say"],
                               index=["Male", "Female", "Non-binary", "Prefer not to say"].index(profile["gender"]))
@@ -1342,7 +1353,7 @@ def view_connections():
             st.divider()
 
     # Your Connections
-    st.subheader("Your Connections")
+    st.subheader("Your Connections😍")
     with get_db_connection() as conn:
         connections = conn.execute(
             '''SELECT c.id,
