@@ -1341,70 +1341,7 @@ def view_connections():
                         st.rerun()
             st.divider()
 
-  # Your Connections
-st.subheader("Your Connections😍")
-with get_db_connection() as conn:
-    connections = conn.execute(
-        '''SELECT c.id,
-                  CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
-                  c.timestamp,
-                  p.name,
-                  p.photo
-           FROM connections c
-                    JOIN profiles p ON (CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END) = p.email
-           WHERE (c.from_email = ? OR c.to_email = ?)
-             AND c.status = 'connected'
-           ORDER BY c.timestamp DESC''',
-        (current_user, current_user, current_user, current_user)
-    ).fetchall()
-
-# This line should be properly indented based on its context
-query_params = st.experimental_get_query_params()    
-    if not connections:
-        st.info("You don't have any connections yet")
-    else:
-        for conn_item in connections:
-            conn_id = conn_item["id"]
-            other_email = conn_item["other_email"]
-            timestamp = conn_item["timestamp"]
-            name = conn_item["name"]
-            photo = conn_item["photo"]
-
-            # Check for unread messages
-            with get_db_connection() as conn:
-                unread_count = conn.execute(
-                    '''SELECT COUNT(*)
-                       FROM messages
-                       WHERE chat_id IN (SELECT MIN(id)
-                                         FROM messages
-                                         WHERE (sender = ? AND receiver = ?)
-                                            OR (sender = ? AND receiver = ?))
-                         AND receiver = ?
-                         AND read =0''',
-                    (current_user, other_email, other_email, current_user, current_user)
-                ).fetchone()[0]
-
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if photo:
-                    try:
-                        st.image(Image.open(io.BytesIO(photo)), width=80, use_column_width=False)
-                    except:
-                        st.image("default_profile.png", width=80, use_column_width=False)
-                else:
-                    st.image("default_profile.png", width=80, use_column_width=False)
-
-            with col2:
-                st.write(f"**{name}**")
-                # FIXED TIMESTAMP HANDLING
-                if isinstance(timestamp, str):
-                    try:
-                        timestamp = datetime.strptime(timestamp,
-                                                      "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(
-                            timestamp, "%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        pass
-
+ 
                 if isinstance(timestamp, datetime):
                     st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
                 else:
