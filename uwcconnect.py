@@ -1,19 +1,3 @@
-import os
-import signal
-import sys
-
-# Render deployment fix - must be at the very top
-if "RENDER" in os.environ:
-    # Set Streamlit configuration for Render
-    os.environ["STREAMLIT_SERVER_PORT"] = os.environ.get("PORT", "8501")
-    os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
-    os.environ["STREAMLIT_SERVER_ADDRESS"] = "0.0.0.0"
-
-# Graceful shutdown handler
-def handle_sigterm(signum, frame):
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, handle_sigterm)
 import pandas as pd
 import random
 import base64
