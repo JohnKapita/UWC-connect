@@ -1341,7 +1341,7 @@ def view_connections():
                         st.rerun()
             st.divider()
 
-   # Your Connections
+  # Your Connections
 st.subheader("Your Connections😍")
 with get_db_connection() as conn:
     connections = conn.execute(
@@ -1357,7 +1357,9 @@ with get_db_connection() as conn:
            ORDER BY c.timestamp DESC''',
         (current_user, current_user, current_user, current_user)
     ).fetchall()
-    
+
+# This line should be properly indented based on its context
+query_params = st.experimental_get_query_params()    
     if not connections:
         st.info("You don't have any connections yet")
     else:
