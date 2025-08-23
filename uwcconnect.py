@@ -1344,7 +1344,7 @@ def view_connections():
     # Your Connections
     st.subheader("Your Connections😍")
     with get_db_connection() as conn:
-        connections = conn.execute(
+            connections = conn.execute(
             '''SELECT c.id,
                       CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
                       c.timestamp,
