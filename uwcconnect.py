@@ -861,7 +861,7 @@ def forgot_password():
                         st.session_state.reset_otp_verification = True
                         st.session_state.temp_reset_email = email
                         st.session_state.reset_otp_attempts = 0
-                        st.rerun()
+                        st.rerrun()
                     else:
                         st.error("Failed to send reset OTP")
 
@@ -1341,7 +1341,73 @@ def view_connections():
                         st.rerun()
             st.divider()
 
- 
+    # Current Connections
+    st.subheader("Your Connections")
+    with get_db_connection() as conn:
+        connections = conn.execute(
+            '''SELECT c.id, 
+                      CASE 
+                          WHEN c.from_email = ? THEN c.to_email 
+                          ELSE c.from_email 
+                      END AS other_email,
+                      c.timestamp,
+                      p.name,
+                      p.photo
+               FROM connections c
+               JOIN profiles p ON p.email = CASE 
+                   WHEN c.from_email = ? THEN c.to_email 
+                   ELSE c.from_email 
+               END
+               WHERE (c.from_email = ? OR c.to_email = ?)
+                 AND c.status = 'connected'
+               ORDER BY c.timestamp DESC''',
+            (current_user, current_user, current_user, current_user)
+        ).fetchall()
+
+    if not connections:
+        st.info("No connections yet. Start discovering people to make connections!")
+    else:
+        for conn_row in connections:
+            conn_id = conn_row["id"]
+            other_email = conn_row["other_email"]
+            timestamp = conn_row["timestamp"]
+            name = conn_row["name"]
+            photo = conn_row["photo"]
+
+            # Get unread message count
+            chat_id = "_".join(sorted([current_user, other_email]))
+            with get_db_connection() as conn:
+                unread_count = conn.execute(
+                    '''SELECT COUNT(*) 
+                       FROM messages 
+                       WHERE chat_id=? 
+                         AND receiver = ? 
+                         AND read = 0''',
+                    (chat_id, current_user)
+                ).fetchone()[0]
+
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if photo:
+                    try:
+                        st.image(Image.open(io.BytesIO(photo)), width=80, use_column_width=False)
+                    except:
+                        st.image("default_profile.png", width=80, use_column_width=False)
+                else:
+                    st.image("default_profile.png", width=80, use_column_width=False)
+
+            with col2:
+                st.write(f"**{name}**")
+
+                # Convert string to datetime object if needed
+                if isinstance(timestamp, str):
+                    try:
+                        timestamp = datetime.strptime(timestamp,
+                                                      "%Y-%m-%d %H:%M:%S.%f") if '.' in timestamp else datetime.strptime(
+                            timestamp, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
+
                 if isinstance(timestamp, datetime):
                     st.caption(f"Connected since {timestamp.strftime('%b %d, %Y')}")
                 else:
@@ -1900,7 +1966,6 @@ def admin_panel():
                                 conn.commit()
                             log_security_event("USER_DELETED", f"Deleted user {email}")
                             st.rerun()
-
     # Report management
     st.subheader("Report Management")
     with get_db_connection() as conn:
