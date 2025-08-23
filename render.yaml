@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: campus-connect
+    env: python
+    plan: free
+    buildCommand: "./build.sh"
+    startCommand: "streamlit run uwcconnect.py --server.port $PORT --server.address 0.0.0.0"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.10.13"
