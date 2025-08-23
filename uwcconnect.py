@@ -13,7 +13,8 @@ if "RENDER" in os.environ:
 def handle_sigterm(signum, frame):
     sys.exit(0)
 
-signal.signal(signal.SIGTERM, handle_sigterm)import pandas as pd
+signal.signal(signal.SIGTERM, handle_sigterm)
+import pandas as pd
 import random
 import base64
 from datetime import datetime, timedelta
