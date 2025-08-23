@@ -9,3 +9,12 @@ env/
 # System files
 .DS_Store
 Thumbs.db
+
+*.log
+*.sqlite3
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env.production
