@@ -12,5 +12,5 @@ pyopenssl==24.1.0
 gunicorn==22.0.0
 watchdog==4.0.1
 pyarrow==16.1.0
-streamlit-webrtc==0.48.3
+streamlit-webrtc==0.63.4
 av==11.0.0
