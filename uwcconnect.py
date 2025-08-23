@@ -1341,23 +1341,23 @@ def view_connections():
                         st.rerun()
             st.divider()
 
-    # Your Connections
-    st.subheader("Your Connections😍")
-    with get_db_connection() as conn:
-            connections = conn.execute(
-            '''SELECT c.id,
-                      CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
-                      c.timestamp,
-                      p.name,
-                      p.photo
-               FROM connections c
-                        JOIN profiles p ON (CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END) = p.email
-               WHERE (c.from_email = ? OR c.to_email = ?)
-                 AND c.status = 'connected'
-               ORDER BY c.timestamp DESC''',
-            (current_user, current_user, current_user, current_user)
-        ).fetchall()
-
+   # Your Connections
+st.subheader("Your Connections😍")
+with get_db_connection() as conn:
+    connections = conn.execute(
+        '''SELECT c.id,
+                  CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END as other_email,
+                  c.timestamp,
+                  p.name,
+                  p.photo
+           FROM connections c
+                    JOIN profiles p ON (CASE WHEN c.from_email = ? THEN c.to_email ELSE c.from_email END) = p.email
+           WHERE (c.from_email = ? OR c.to_email = ?)
+             AND c.status = 'connected'
+           ORDER BY c.timestamp DESC''',
+        (current_user, current_user, current_user, current_user)
+    ).fetchall()
+    
     if not connections:
         st.info("You don't have any connections yet")
     else:
